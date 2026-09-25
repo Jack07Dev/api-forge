@@ -1,6 +1,6 @@
 import { Router } from "express";
 
-import { create, list, getById, updateStatus, update } from "../controllers/api-version.controller.js";
+import { create, list, getById, updateStatus, update, activate } from "../controllers/api-version.controller.js";
 
 import { authenticate } from "../middlewares/auth.middleware.js";
 
@@ -47,6 +47,14 @@ router.patch(
   requireOrganizationMember,
   requireRole("owner", "admin"),
   update
+);
+
+router.post(
+  "/:organizationId/projects/:projectId/apis/:apiId/versions/:versionId/activate",
+  authenticate,
+  requireOrganizationMember,
+  requireRole("owner", "admin"),
+  activate
 );
 
 export default router;

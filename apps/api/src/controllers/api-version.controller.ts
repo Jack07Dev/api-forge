@@ -2,7 +2,14 @@ import { Response } from "express";
 import mongoose from "mongoose";
 
 import { AuthenticatedRequest } from "../middlewares/auth.middleware.js";
-import { createAPIVersion, getAPIVersions, getAPIVersionById, updateAPIVersionStatus, updateAPIVersion } from "../services/api-version.service.js";
+import {
+    createAPIVersion,
+    getAPIVersions,
+    getAPIVersionById,
+    updateAPIVersionStatus,
+    updateAPIVersion,
+    activateAPIVersion
+} from "../services/api-version.service.js";
 
 export const create = async (
     req: AuthenticatedRequest,
@@ -331,79 +338,152 @@ export const updateStatus = async (
 };
 
 export const update = async (
-  req: AuthenticatedRequest,
-  res: Response
+    req: AuthenticatedRequest,
+    res: Response
 ): Promise<void> => {
-  try {
-    const {
-      projectId,
-      apiId,
-      versionId
-    } = req.params;
+    try {
+        const {
+            projectId,
+            apiId,
+            versionId
+        } = req.params;
 
-    if (
-      typeof projectId !== "string" ||
-      !mongoose.Types.ObjectId.isValid(projectId)
-    ) {
-      res.status(400).json({
-        success: false,
-        message: "Invalid project ID"
-      });
-      return;
+        if (
+            typeof projectId !== "string" ||
+            !mongoose.Types.ObjectId.isValid(projectId)
+        ) {
+            res.status(400).json({
+                success: false,
+                message: "Invalid project ID"
+            });
+            return;
+        }
+
+        if (
+            typeof apiId !== "string" ||
+            !mongoose.Types.ObjectId.isValid(apiId)
+        ) {
+            res.status(400).json({
+                success: false,
+                message: "Invalid API ID"
+            });
+            return;
+        }
+
+        if (
+            typeof versionId !== "string" ||
+            !mongoose.Types.ObjectId.isValid(versionId)
+        ) {
+            res.status(400).json({
+                success: false,
+                message: "Invalid version ID"
+            });
+            return;
+        }
+
+        const { basePath, description } = req.body;
+
+        const apiVersion = await updateAPIVersion({
+            versionId,
+            apiId,
+            projectId,
+            organizationId:
+                req.organization!.id,
+            basePath,
+            description
+        });
+
+        res.status(200).json({
+            success: true,
+            message:
+                "API version updated successfully",
+            data: apiVersion
+        });
+    } catch (error) {
+        console.error(
+            "Update API version error:",
+            error
+        );
+
+        res.status(400).json({
+            success: false,
+            message:
+                error instanceof Error
+                    ? error.message
+                    : "Failed to update API version"
+        });
     }
+};
 
-    if (
-      typeof apiId !== "string" ||
-      !mongoose.Types.ObjectId.isValid(apiId)
-    ) {
-      res.status(400).json({
-        success: false,
-        message: "Invalid API ID"
-      });
-      return;
+export const activate = async (
+    req: AuthenticatedRequest,
+    res: Response
+): Promise<void> => {
+    try {
+        const {
+            projectId,
+            apiId,
+            versionId
+        } = req.params;
+
+        if (
+            typeof projectId !== "string" ||
+            !mongoose.Types.ObjectId.isValid(projectId)
+        ) {
+            res.status(400).json({
+                success: false,
+                message: "Invalid project ID"
+            });
+            return;
+        }
+
+        if (
+            typeof apiId !== "string" ||
+            !mongoose.Types.ObjectId.isValid(apiId)
+        ) {
+            res.status(400).json({
+                success: false,
+                message: "Invalid API ID"
+            });
+            return;
+        }
+
+        if (
+            typeof versionId !== "string" ||
+            !mongoose.Types.ObjectId.isValid(versionId)
+        ) {
+            res.status(400).json({
+                success: false,
+                message: "Invalid version ID"
+            });
+            return;
+        }
+
+        const apiVersion = await activateAPIVersion({
+            versionId,
+            apiId,
+            projectId,
+            organizationId: req.organization!.id
+        });
+
+        res.status(200).json({
+            success: true,
+            message:
+                "API version activated successfully",
+            data: apiVersion
+        });
+    } catch (error) {
+        console.error(
+            "Activate API version error:",
+            error
+        );
+
+        res.status(400).json({
+            success: false,
+            message:
+                error instanceof Error
+                    ? error.message
+                    : "Failed to activate API version"
+        });
     }
-
-    if (
-      typeof versionId !== "string" ||
-      !mongoose.Types.ObjectId.isValid(versionId)
-    ) {
-      res.status(400).json({
-        success: false,
-        message: "Invalid version ID"
-      });
-      return;
-    }
-
-    const { basePath, description } = req.body;
-
-    const apiVersion = await updateAPIVersion({
-      versionId,
-      apiId,
-      projectId,
-      organizationId:
-        req.organization!.id,
-      basePath,
-      description
-    });
-
-    res.status(200).json({
-      success: true,
-      message:
-        "API version updated successfully",
-      data: apiVersion
-    });
-  } catch (error) {
-    console.error(
-      "Update API version error:",
-      error
-    );
-
-    res.status(400).json({
-      success: false,
-      message:
-        error instanceof Error
-          ? error.message
-          : "Failed to update API version"
-    });
-  }
 };
