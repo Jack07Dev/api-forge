@@ -1,6 +1,6 @@
 import { Router } from "express";
 
-import { create, list, getById } from "../controllers/api-version.controller.js";
+import { create, list, getById, updateStatus, update } from "../controllers/api-version.controller.js";
 
 import { authenticate } from "../middlewares/auth.middleware.js";
 
@@ -31,6 +31,22 @@ router.get(
   authenticate,
   requireOrganizationMember,
   getById
+);
+
+router.patch(
+  "/:organizationId/projects/:projectId/apis/:apiId/versions/:versionId/status",
+  authenticate,
+  requireOrganizationMember,
+  requireRole("owner", "admin"),
+  updateStatus
+);
+
+router.patch(
+  "/:organizationId/projects/:projectId/apis/:apiId/versions/:versionId",
+  authenticate,
+  requireOrganizationMember,
+  requireRole("owner", "admin"),
+  update
 );
 
 export default router;
