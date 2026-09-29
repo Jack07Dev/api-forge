@@ -7,6 +7,7 @@ import organizationTestRoutes from "./routes/organization-test.routes.js";
 import projectRoutes from "./routes/project.routes.js";
 import apiRoutes from "./routes/api.routes.js";
 import apiVersionRoutes from "./routes/api-version.routes.js";
+import apiModelRoutes from "./routes/api-model.routes.js";
 
 const app = express();
 
@@ -26,10 +27,12 @@ app.use("/api/organizations", organizationRoutes);
 app.use("/api/organizations", projectRoutes);
 app.use("/api/organizations", apiRoutes);
 app.use("/api/organizations", apiVersionRoutes);
+app.use("/api/organizations", apiModelRoutes);
+
 
 app.use(
-  "/api/organization-test",
-  organizationTestRoutes
+    "/api/organization-test",
+    organizationTestRoutes
 );
 
 app.get("/api/health", (_req, res) => {
