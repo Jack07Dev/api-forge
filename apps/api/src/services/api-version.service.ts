@@ -1,3 +1,4 @@
+import mongoose from "mongoose";
 import APIVersion, {
     APIVersionStatus
 } from "../models/APIVersion.js";
@@ -25,6 +26,13 @@ interface UpdateAPIVersionInput {
     organizationId: string;
     basePath?: string;
     description?: string;
+}
+
+interface ActivateAPIVersionInput {
+    versionId: string;
+    apiId: string;
+    projectId: string;
+    organizationId: string;
 }
 
 
@@ -157,6 +165,44 @@ export const updateAPIVersionStatus = async ({
         );
     }
 
+    if (status === "active") {
+        const existingActiveVersion =
+            await APIVersion.findOne({
+                apiId,
+                projectId,
+                organizationId,
+                status: "active",
+                _id: {
+                    $ne: versionId
+                }
+            });
+
+        if (existingActiveVersion) {
+            throw new Error(
+                `API already has an active version: ${existingActiveVersion.versionLabel}`
+            );
+        }
+    }
+
+    if (status === "deprecated") {
+        const replacementVersion =
+            await APIVersion.findOne({
+                apiId,
+                projectId,
+                organizationId,
+                status: "active",
+                _id: {
+                    $ne: versionId
+                }
+            });
+
+        if (!replacementVersion) {
+            throw new Error(
+                "Cannot deprecate the active version without another active version"
+            );
+        }
+    }
+
     apiVersion.status = status;
 
     await apiVersion.save();
@@ -266,4 +312,70 @@ export const updateAPIVersion = async ({
             runValidators: true
         }
     );
+};
+
+export const activateAPIVersion = async ({
+    versionId,
+    apiId,
+    projectId,
+    organizationId
+}: ActivateAPIVersionInput) => {
+    const session = await mongoose.startSession();
+
+    try {
+        let activatedVersion;
+
+        await session.withTransaction(async () => {
+            const apiVersion = await APIVersion.findOne({
+                _id: versionId,
+                apiId,
+                projectId,
+                organizationId
+            }).session(session);
+
+            if (!apiVersion) {
+                throw new Error("API version not found");
+            }
+
+            if (apiVersion.status === "active") {
+                throw new Error(
+                    "API version is already active"
+                );
+            }
+
+            if (apiVersion.status !== "draft") {
+                throw new Error(
+                    `Cannot activate API version from ${apiVersion.status} status`
+                );
+            }
+
+            const currentActiveVersion =
+                await APIVersion.findOne({
+                    apiId,
+                    projectId,
+                    organizationId,
+                    status: "active"
+                }).session(session);
+
+            if (currentActiveVersion) {
+                currentActiveVersion.status = "deprecated";
+
+                await currentActiveVersion.save({
+                    session
+                });
+            }
+
+            apiVersion.status = "active";
+
+            await apiVersion.save({
+                session
+            });
+
+            activatedVersion = apiVersion;
+        });
+
+        return activatedVersion;
+    } finally {
+        await session.endSession();
+    }
 };

@@ -3,10 +3,16 @@ import cors from "cors";
 import cookieParser from "cookie-parser";
 import authRoutes from "./routes/auth.routes.js";
 import organizationRoutes from "./routes/organization.routes.js";
-import organizationTestRoutes from "./routes/organization-test.routes.js";
 import projectRoutes from "./routes/project.routes.js";
 import apiRoutes from "./routes/api.routes.js";
 import apiVersionRoutes from "./routes/api-version.routes.js";
+import apiModelRoutes from "./routes/api-model.routes.js";
+import apiEndpointRoutes from "./routes/api-endpoint.routes.js";
+import apiEndpointParameterRoutes from "./routes/api-endpoint-parameter.routes.js";
+import apiEndpointRequestBodyRoutes from "./routes/api-endpoint-request-body.routes.js";
+import apiEndpointResponseRoutes from "./routes/api-endpoint-response.routes.js";
+import apiEndpointSecurityRoutes from "./routes/api-endpoint-security.routes.js";
+import apiDefinitionValidationRoutes from "./routes/api-definition-validation.routes.js";
 
 const app = express();
 
@@ -26,11 +32,13 @@ app.use("/api/organizations", organizationRoutes);
 app.use("/api/organizations", projectRoutes);
 app.use("/api/organizations", apiRoutes);
 app.use("/api/organizations", apiVersionRoutes);
-
-app.use(
-  "/api/organization-test",
-  organizationTestRoutes
-);
+app.use("/api/organizations", apiModelRoutes);
+app.use("/api/organizations", apiEndpointRoutes);
+app.use("/api/organizations", apiEndpointParameterRoutes);
+app.use("/api/organizations", apiEndpointRequestBodyRoutes);
+app.use("/api/organizations", apiEndpointResponseRoutes);
+app.use("/api/organizations", apiEndpointSecurityRoutes);
+app.use("/api/organizations", apiDefinitionValidationRoutes);
 
 app.get("/api/health", (_req, res) => {
     res.status(200).json({

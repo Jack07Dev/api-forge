@@ -1,6 +1,12 @@
 import { Router } from "express";
 
-import { create, list, getById, updateStatus, update, activate } from "../controllers/api-version.controller.js";
+import {
+  create,
+  list,
+  getById,
+  update,
+  archive
+} from "../controllers/api-endpoint.controller.js";
 
 import { authenticate } from "../middlewares/auth.middleware.js";
 
@@ -12,7 +18,7 @@ import {
 const router = Router();
 
 router.post(
-  "/:organizationId/projects/:projectId/apis/:apiId/versions",
+  "/:organizationId/projects/:projectId/apis/:apiId/versions/:versionId/endpoints",
   authenticate,
   requireOrganizationMember,
   requireRole("owner", "admin"),
@@ -20,41 +26,34 @@ router.post(
 );
 
 router.get(
-  "/:organizationId/projects/:projectId/apis/:apiId/versions",
+  "/:organizationId/projects/:projectId/apis/:apiId/versions/:versionId/endpoints",
   authenticate,
   requireOrganizationMember,
   list
 );
 
 router.get(
-  "/:organizationId/projects/:projectId/apis/:apiId/versions/:versionId",
+  "/:organizationId/projects/:projectId/apis/:apiId/versions/:versionId/endpoints/:endpointId",
   authenticate,
   requireOrganizationMember,
   getById
 );
 
 router.patch(
-  "/:organizationId/projects/:projectId/apis/:apiId/versions/:versionId/status",
-  authenticate,
-  requireOrganizationMember,
-  requireRole("owner", "admin"),
-  updateStatus
-);
-
-router.patch(
-  "/:organizationId/projects/:projectId/apis/:apiId/versions/:versionId",
+  "/:organizationId/projects/:projectId/apis/:apiId/versions/:versionId/endpoints/:endpointId",
   authenticate,
   requireOrganizationMember,
   requireRole("owner", "admin"),
   update
 );
 
-router.post(
-  "/:organizationId/projects/:projectId/apis/:apiId/versions/:versionId/activate",
+router.patch(
+  "/:organizationId/projects/:projectId/apis/:apiId/versions/:versionId/endpoints/:endpointId/archive",
   authenticate,
   requireOrganizationMember,
   requireRole("owner", "admin"),
-  activate
+  archive
 );
+
 
 export default router;

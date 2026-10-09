@@ -25,10 +25,8 @@ const apiVersionSchema = new Schema<IAPIVersion>(
         apiId: {
             type: Schema.Types.ObjectId,
             ref: "API",
-            required: true,
-            index: true
+            required: true
         },
-
         projectId: {
             type: Schema.Types.ObjectId,
             ref: "Project",
@@ -106,6 +104,18 @@ apiVersionSchema.index({
     projectId: 1,
     apiId: 1
 });
+
+apiVersionSchema.index(
+    {
+        apiId: 1
+    },
+    {
+        unique: true,
+        partialFilterExpression: {
+            status: "active"
+        }
+    }
+);
 
 const APIVersion = mongoose.model<IAPIVersion>(
     "APIVersion",

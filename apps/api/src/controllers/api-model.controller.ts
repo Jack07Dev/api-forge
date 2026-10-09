@@ -1,30 +1,29 @@
 import { Response } from "express";
 import mongoose from "mongoose";
 
-import { AuthenticatedRequest } from "../middlewares/auth.middleware.js";
 import {
-    createAPIVersion,
-    getAPIVersions,
-    getAPIVersionById,
-    updateAPIVersionStatus,
-    updateAPIVersion,
-    activateAPIVersion
-} from "../services/api-version.service.js";
+    createAPIModel,
+    getAPIModels,
+    getAPIModelById,
+    updateAPIModel,
+    archiveAPIModel
+} from "../services/api-model.service.js";
+
+import {
+    AuthenticatedRequest
+} from "../middlewares/auth.middleware.js";
 
 export const create = async (
     req: AuthenticatedRequest,
     res: Response
 ): Promise<void> => {
     try {
-        if (!req.user || !req.organization) {
-            res.status(401).json({
-                success: false,
-                message: "Authentication required"
-            });
-            return;
-        }
-
-        const { projectId, apiId } = req.params;
+        const {
+            organizationId,
+            projectId,
+            apiId,
+            versionId
+        } = req.params;
 
         if (
             typeof projectId !== "string" ||
@@ -48,32 +47,73 @@ export const create = async (
             return;
         }
 
-        const apiVersion = await createAPIVersion({
-            apiId,
-            projectId,
-            organizationId: req.organization.id,
-            userId: req.user.userId
-        });
+        if (
+            typeof versionId !== "string" ||
+            !mongoose.Types.ObjectId.isValid(versionId)
+        ) {
+            res.status(400).json({
+                success: false,
+                message: "Invalid version ID"
+            });
+            return;
+        }
+
+        if (!req.user) {
+            res.status(401).json({
+                success: false,
+                message: "Authentication required"
+            });
+            return;
+        }
+
+        const {
+            name,
+            description,
+            fields
+        } = req.body;
+
+        if (
+            typeof name !== "string"
+        ) {
+            res.status(400).json({
+                success: false,
+                message: "Model name is required"
+            });
+            return;
+        }
+
+        const model =
+            await createAPIModel({
+                name,
+                description,
+                fields,
+                apiId,
+                versionId,
+                projectId,
+                organizationId:
+                    req.organization!.id,
+                userId:
+                    req.user.userId
+            });
 
         res.status(201).json({
             success: true,
-            message: "API version created successfully",
-            data: apiVersion
+            message:
+                "API model created successfully",
+            data: model
         });
     } catch (error) {
         console.error(
-            "Create API version error:",
+            "Create API model error:",
             error
         );
 
-        const message =
-            error instanceof Error
-                ? error.message
-                : "Failed to create API version";
-
         res.status(400).json({
             success: false,
-            message
+            message:
+                error instanceof Error
+                    ? error.message
+                    : "Failed to create API model"
         });
     }
 };
@@ -83,15 +123,11 @@ export const list = async (
     res: Response
 ): Promise<void> => {
     try {
-        if (!req.user || !req.organization) {
-            res.status(401).json({
-                success: false,
-                message: "Authentication required"
-            });
-            return;
-        }
-
-        const { projectId, apiId } = req.params;
+        const {
+            projectId,
+            apiId,
+            versionId
+        } = req.params;
 
         if (
             typeof projectId !== "string" ||
@@ -115,25 +151,37 @@ export const list = async (
             return;
         }
 
-        const versions = await getAPIVersions(
+        if (
+            typeof versionId !== "string" ||
+            !mongoose.Types.ObjectId.isValid(versionId)
+        ) {
+            res.status(400).json({
+                success: false,
+                message: "Invalid version ID"
+            });
+            return;
+        }
+
+        const models = await getAPIModels(
             apiId,
+            versionId,
             projectId,
-            req.organization.id
+            req.organization!.id
         );
 
         res.status(200).json({
             success: true,
-            data: versions
+            data: models
         });
     } catch (error) {
         console.error(
-            "List API versions error:",
+            "Get API models error:",
             error
         );
 
         res.status(500).json({
             success: false,
-            message: "Failed to fetch API versions"
+            message: "Failed to get API models"
         });
     }
 };
@@ -143,18 +191,11 @@ export const getById = async (
     res: Response
 ): Promise<void> => {
     try {
-        if (!req.user || !req.organization) {
-            res.status(401).json({
-                success: false,
-                message: "Authentication required"
-            });
-            return;
-        }
-
         const {
             projectId,
             apiId,
-            versionId
+            versionId,
+            modelId
         } = req.params;
 
         if (
@@ -190,149 +231,46 @@ export const getById = async (
             return;
         }
 
-        const version = await getAPIVersionById(
-            versionId,
+        if (
+            typeof modelId !== "string" ||
+            !mongoose.Types.ObjectId.isValid(modelId)
+        ) {
+            res.status(400).json({
+                success: false,
+                message: "Invalid model ID"
+            });
+            return;
+        }
+
+        const model = await getAPIModelById(
+            modelId,
             apiId,
+            versionId,
             projectId,
-            req.organization.id
+            req.organization!.id
         );
 
-        if (!version) {
+        if (!model) {
             res.status(404).json({
                 success: false,
-                message: "API version not found"
+                message: "API model not found"
             });
             return;
         }
 
         res.status(200).json({
             success: true,
-            data: version
+            data: model
         });
     } catch (error) {
         console.error(
-            "Get API version error:",
+            "Get API model error:",
             error
         );
 
         res.status(500).json({
             success: false,
-            message: "Failed to fetch API version"
-        });
-    }
-};
-
-export const updateStatus = async (
-    req: AuthenticatedRequest,
-    res: Response
-): Promise<void> => {
-    try {
-        if (!req.user || !req.organization) {
-            res.status(401).json({
-                success: false,
-                message: "Authentication required"
-            });
-            return;
-        }
-
-        const {
-            projectId,
-            apiId,
-            versionId
-        } = req.params;
-
-        if (
-            typeof projectId !== "string" ||
-            !mongoose.Types.ObjectId.isValid(projectId)
-        ) {
-            res.status(400).json({
-                success: false,
-                message: "Invalid project ID"
-            });
-            return;
-        }
-
-        if (
-            typeof apiId !== "string" ||
-            !mongoose.Types.ObjectId.isValid(apiId)
-        ) {
-            res.status(400).json({
-                success: false,
-                message: "Invalid API ID"
-            });
-            return;
-        }
-
-        if (
-            typeof versionId !== "string" ||
-            !mongoose.Types.ObjectId.isValid(versionId)
-        ) {
-            res.status(400).json({
-                success: false,
-                message: "Invalid version ID"
-            });
-            return;
-        }
-
-        const { status } = req.body;
-
-        const allowedStatuses = [
-            "draft",
-            "active",
-            "deprecated",
-            "archived"
-        ];
-
-        if (
-            typeof status !== "string" ||
-            !allowedStatuses.includes(status)
-        ) {
-            res.status(400).json({
-                success: false,
-                message:
-                    "Invalid status. Allowed values: draft, active, deprecated, archived"
-            });
-            return;
-        }
-
-        const updatedVersion =
-            await updateAPIVersionStatus({
-                versionId,
-                apiId,
-                projectId,
-                organizationId: req.organization.id,
-                status: status as
-                    | "draft"
-                    | "active"
-                    | "deprecated"
-                    | "archived"
-            });
-
-        res.status(200).json({
-            success: true,
-            message:
-                "API version status updated successfully",
-            data: updatedVersion
-        });
-    } catch (error) {
-        console.error(
-            "Update API version status error:",
-            error
-        );
-
-        const message =
-            error instanceof Error
-                ? error.message
-                : "Failed to update API version status";
-
-        const statusCode =
-            message === "API version not found"
-                ? 404
-                : 400;
-
-        res.status(statusCode).json({
-            success: false,
-            message
+            message: "Failed to get API model"
         });
     }
 };
@@ -345,7 +283,8 @@ export const update = async (
         const {
             projectId,
             apiId,
-            versionId
+            versionId,
+            modelId
         } = req.params;
 
         if (
@@ -381,27 +320,45 @@ export const update = async (
             return;
         }
 
-        const { basePath, description } = req.body;
+        if (
+            typeof modelId !== "string" ||
+            !mongoose.Types.ObjectId.isValid(modelId)
+        ) {
+            res.status(400).json({
+                success: false,
+                message: "Invalid model ID"
+            });
+            return;
+        }
 
-        const apiVersion = await updateAPIVersion({
-            versionId,
-            apiId,
-            projectId,
-            organizationId:
-                req.organization!.id,
-            basePath,
-            description
-        });
+        const {
+            name,
+            description,
+            fields
+        } = req.body;
+
+        const model =
+            await updateAPIModel({
+                modelId,
+                apiId,
+                versionId,
+                projectId,
+                organizationId:
+                    req.organization!.id,
+                name,
+                description,
+                fields
+            });
 
         res.status(200).json({
             success: true,
             message:
-                "API version updated successfully",
-            data: apiVersion
+                "API model updated successfully",
+            data: model
         });
     } catch (error) {
         console.error(
-            "Update API version error:",
+            "Update API model error:",
             error
         );
 
@@ -410,12 +367,12 @@ export const update = async (
             message:
                 error instanceof Error
                     ? error.message
-                    : "Failed to update API version"
+                    : "Failed to update API model"
         });
     }
 };
 
-export const activate = async (
+export const archive = async (
     req: AuthenticatedRequest,
     res: Response
 ): Promise<void> => {
@@ -423,7 +380,8 @@ export const activate = async (
         const {
             projectId,
             apiId,
-            versionId
+            versionId,
+            modelId
         } = req.params;
 
         if (
@@ -459,22 +417,35 @@ export const activate = async (
             return;
         }
 
-        const apiVersion = await activateAPIVersion({
-            versionId,
-            apiId,
-            projectId,
-            organizationId: req.organization!.id
-        });
+        if (
+            typeof modelId !== "string" ||
+            !mongoose.Types.ObjectId.isValid(modelId)
+        ) {
+            res.status(400).json({
+                success: false,
+                message: "Invalid model ID"
+            });
+            return;
+        }
+
+        const model =
+            await archiveAPIModel(
+                modelId,
+                apiId,
+                versionId,
+                projectId,
+                req.organization!.id
+            );
 
         res.status(200).json({
             success: true,
             message:
-                "API version activated successfully",
-            data: apiVersion
+                "API model archived successfully",
+            data: model
         });
     } catch (error) {
         console.error(
-            "Activate API version error:",
+            "Archive API model error:",
             error
         );
 
@@ -483,7 +454,7 @@ export const activate = async (
             message:
                 error instanceof Error
                     ? error.message
-                    : "Failed to activate API version"
+                    : "Failed to archive API model"
         });
     }
 };
