@@ -13,6 +13,10 @@ import apiEndpointRequestBodyRoutes from "./routes/api-endpoint-request-body.rou
 import apiEndpointResponseRoutes from "./routes/api-endpoint-response.routes.js";
 import apiEndpointSecurityRoutes from "./routes/api-endpoint-security.routes.js";
 import apiDefinitionValidationRoutes from "./routes/api-definition-validation.routes.js";
+import openapiGeneratorRoutes from "./routes/openapi-generator.routes.js";
+import openapiValidationRoutes from "./routes/openapi-validation.routes.js";
+import openapiExportRoutes from "./routes/openapi-export.routes.js";
+
 
 const app = express();
 
@@ -39,6 +43,19 @@ app.use("/api/organizations", apiEndpointRequestBodyRoutes);
 app.use("/api/organizations", apiEndpointResponseRoutes);
 app.use("/api/organizations", apiEndpointSecurityRoutes);
 app.use("/api/organizations", apiDefinitionValidationRoutes);
+app.use(
+    "/api/organizations/:organizationId/projects/:projectId/apis/:apiId/versions/:versionId/openapi",
+    openapiGeneratorRoutes
+);
+app.use(
+    "/api/organizations/:organizationId/projects/:projectId/apis/:apiId/versions/:versionId/openapi/validate",
+    openapiValidationRoutes
+);
+app.use(
+  "/api/organizations/:organizationId/projects/:projectId/apis/:apiId/versions/:versionId/openapi/export",
+  openapiExportRoutes
+);
+
 
 app.get("/api/health", (_req, res) => {
     res.status(200).json({
