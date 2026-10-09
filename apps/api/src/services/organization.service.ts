@@ -64,3 +64,64 @@ export const getUserOrganizations = async (
 
   return memberships;
 };
+
+export const getOrganizationById = async (
+  organizationId: string,
+  userId: string
+) => {
+  const membership =
+    await OrganizationMember.findOne({
+      organizationId,
+      userId
+    });
+
+  if (!membership) {
+    return null;
+  }
+
+  return Organization.findOne({
+    _id: organizationId,
+    isActive: true
+  });
+};
+
+export const archiveOrganization = async (
+  organizationId: string,
+  userId: string
+) => {
+  const membership =
+    await OrganizationMember.findOne({
+      organizationId,
+      userId
+    });
+
+  if (!membership) {
+    throw new Error(
+      "You are not a member of this organization"
+    );
+  }
+
+  if (membership.role !== "owner") {
+    throw new Error(
+      "Only the organization owner can archive the organization"
+    );
+  }
+
+  const organization =
+    await Organization.findOne({
+      _id: organizationId,
+      isActive: true
+    });
+
+  if (!organization) {
+    throw new Error(
+      "Organization not found or already archived"
+    );
+  }
+
+  organization.isActive = false;
+
+  await organization.save();
+
+  return organization;
+};
