@@ -16,6 +16,13 @@ import apiDefinitionValidationRoutes from "./routes/api-definition-validation.ro
 import openapiGeneratorRoutes from "./routes/openapi-generator.routes.js";
 import openapiValidationRoutes from "./routes/openapi-validation.routes.js";
 import openapiExportRoutes from "./routes/openapi-export.routes.js";
+import runtimeResolverRoutes, {
+    activeRuntimeResolverRoutes,
+    mockExecutionRoutes,
+    dataExecutionRoutes
+} from "./runtime/routes/runtime-resolver.routes.js";
+import apiEndpointMockRoutes from "./routes/api-endpoint-mock.routes.js";
+
 
 
 const app = express();
@@ -52,10 +59,32 @@ app.use(
     openapiValidationRoutes
 );
 app.use(
-  "/api/organizations/:organizationId/projects/:projectId/apis/:apiId/versions/:versionId/openapi/export",
-  openapiExportRoutes
+    "/api/organizations/:organizationId/projects/:projectId/apis/:apiId/versions/:versionId/openapi/export",
+    openapiExportRoutes
+);
+app.use(
+    "/api/organizations/:organizationId/projects/:projectId/apis/:apiId/versions/:versionId/runtime/resolve",
+    runtimeResolverRoutes
+);
+app.use(
+    "/api/organizations/:organizationId/projects/:projectId/apis/:apiId/runtime/resolve",
+    activeRuntimeResolverRoutes
+);
+// Real database CRUD execution
+app.use(
+    "/api/organizations/:organizationId/projects/:projectId/apis/:apiId/runtime/execute/data",
+    dataExecutionRoutes
 );
 
+// Existing mock execution
+app.use(
+    "/api/organizations/:organizationId/projects/:projectId/apis/:apiId/runtime/execute",
+    mockExecutionRoutes
+);
+app.use(
+    "/api/organizations",
+    apiEndpointMockRoutes
+);
 
 app.get("/api/health", (_req, res) => {
     res.status(200).json({

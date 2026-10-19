@@ -1,9 +1,16 @@
+import mongoose from "mongoose";
 import APIEndpoint, {
   HTTPMethod
 } from "../models/APIEndpoint.js";
 
+import {
+  assertDraftAPIVersion,
+  withDraftVersionTransaction
+} from "./api-version-guard.service.js";
+
 import API from "../models/API.js";
 import APIVersion from "../models/APIVersion.js";
+import { hasRouteConflict } from "../runtime/utils/route-conflict.js";
 
 interface CreateAPIEndpointInput {
   name: string;
@@ -88,6 +95,13 @@ export const createAPIEndpoint = async ({
   organizationId,
   userId
 }: CreateAPIEndpointInput) => {
+  await assertDraftAPIVersion({
+    organizationId,
+    projectId,
+    apiId,
+    apiVersionId
+  });
+
   const trimmedName = name.trim();
 
   if (!trimmedName) {
@@ -122,67 +136,102 @@ export const createAPIEndpoint = async ({
     );
   }
 
-  const normalizedPath =
-    normalizePath(path);
+  const normalizedPath = normalizePath(path);
 
-  // Verify API belongs to project and organization
-  const api = await API.findOne({
-    _id: apiId,
-    projectId,
-    organizationId
-  });
-
-  if (!api) {
-    throw new Error("API not found");
-  }
-
-  // Verify version belongs to API,
-  // project and organization
-  const apiVersion =
-    await APIVersion.findOne({
-      _id: apiVersionId,
-      apiId,
-      projectId,
-      organizationId
-    });
-
-  if (!apiVersion) {
-    throw new Error(
-      "API version not found"
-    );
-  }
-
-  // Prevent duplicate method + path
-  // inside the same API version
-  const existingEndpoint =
-    await APIEndpoint.findOne({
-      apiVersionId,
-      method,
-      path: normalizedPath
-    });
-
-  if (existingEndpoint) {
-    throw new Error(
-      `An endpoint already exists for ${method} ${normalizedPath}`
-    );
-  }
-
-  const endpoint =
-    await APIEndpoint.create({
-      apiId,
-      apiVersionId,
-      projectId,
+  return withDraftVersionTransaction(
+    {
       organizationId,
-      name: trimmedName,
-      description:
-        description?.trim(),
-      method,
-      path: normalizedPath,
-      status: "draft",
-      createdBy: userId
-    });
+      projectId,
+      apiId,
+      apiVersionId
+    },
+    async (session) => {
+      // Verify API belongs to project and organization
+      const api = await API.findOne({
+        _id: apiId,
+        projectId,
+        organizationId
+      }).session(session);
 
-  return endpoint;
+      if (!api) {
+        throw new Error("API not found");
+      }
+
+
+      // Verify version belongs to API,
+      // project and organization
+      const apiVersion =
+        await APIVersion.findOne({
+          _id: apiVersionId,
+          apiId,
+          projectId,
+          organizationId
+        }).session(session);
+
+      if (!apiVersion) {
+        throw new Error(
+          "API version not found"
+        );
+      }
+
+      // -------------------------------------
+      // Check duplicate and conflicting routes
+      // within the same API version
+      // -------------------------------------
+
+      const existingEndpoints = await APIEndpoint.collection
+        .find(
+          {
+            apiVersionId: new mongoose.Types.ObjectId(apiVersionId),
+            organizationId: new mongoose.Types.ObjectId(organizationId),
+            projectId: new mongoose.Types.ObjectId(projectId),
+            apiId: new mongoose.Types.ObjectId(apiId),
+            status: { $ne: "archived" }
+          },
+          { session }
+        )
+        .toArray();
+
+      const conflictingEndpoint = existingEndpoints.find((existing) =>
+        hasRouteConflict(
+          {
+            method: existing.method,
+            path: existing.path
+          },
+          {
+            method,
+            path: normalizedPath
+          }
+        )
+      );
+
+      if (conflictingEndpoint) {
+        throw new Error(
+          `Route conflict: ${method} ${normalizedPath} conflicts with existing endpoint ${conflictingEndpoint.method} ${conflictingEndpoint.path}`
+        );
+      }
+
+      const [endpoint] = await APIEndpoint.create(
+        [
+          {
+            apiId,
+            apiVersionId,
+            projectId,
+            organizationId,
+            name: trimmedName,
+            description: description?.trim(),
+            method,
+            path: normalizedPath,
+            status: "draft",
+            createdBy: userId
+          }
+        ],
+        { session }
+      );
+
+      return endpoint;
+    }
+  );
 };
 
 export const getAPIEndpoints = async (
@@ -230,6 +279,12 @@ export const updateAPIEndpoint = async ({
   method,
   path
 }: UpdateAPIEndpointInput) => {
+  await assertDraftAPIVersion({
+    organizationId,
+    projectId,
+    apiId,
+    apiVersionId
+  });
   const updateData: {
     name?: string;
     description?: string;
@@ -320,65 +375,93 @@ export const updateAPIEndpoint = async ({
   // Verify endpoint
   // -----------------------------
 
-  const endpoint =
-    await APIEndpoint.findOne({
-      _id: endpointId,
-      apiId,
-      apiVersionId,
+  return withDraftVersionTransaction(
+    {
+      organizationId,
       projectId,
-      organizationId
-    });
+      apiId,
+      apiVersionId
+    },
+    async (session) => {
+      const endpoint =
+        await APIEndpoint.findOne({
+          _id: endpointId,
+          apiId,
+          apiVersionId,
+          projectId,
+          organizationId
+        }).session(session);
 
-  if (!endpoint) {
-    throw new Error(
-      "API endpoint not found"
-    );
-  }
-
-  // -----------------------------
-  // Check duplicate method + path
-  // -----------------------------
-
-  const finalMethod =
-    method ?? endpoint.method;
-
-  const finalPath =
-    normalizedPath ?? endpoint.path;
-
-  const existingEndpoint =
-    await APIEndpoint.findOne({
-      apiVersionId,
-      method: finalMethod,
-      path: finalPath,
-      _id: {
-        $ne: endpointId
+      if (!endpoint) {
+        throw new Error(
+          "API endpoint not found"
+        );
       }
-    });
 
-  if (existingEndpoint) {
-    throw new Error(
-      `An endpoint already exists for ${finalMethod} ${finalPath}`
-    );
-  }
+      // -----------------------------
+      // Check duplicate method + path
+      // -----------------------------
 
-  // -----------------------------
-  // Update endpoint
-  // -----------------------------
+      const finalMethod = method ?? endpoint.method;
 
-  return APIEndpoint.findOneAndUpdate(
-    {
-      _id: endpointId,
-      apiId,
-      apiVersionId,
-      projectId,
-      organizationId
-    },
-    {
-      $set: updateData
-    },
-    {
-      new: true,
-      runValidators: true
+      const finalPath = normalizedPath ?? endpoint.path;
+
+      const existingEndpoints = await APIEndpoint.collection
+        .find(
+          {
+            apiVersionId: new mongoose.Types.ObjectId(apiVersionId),
+            organizationId: new mongoose.Types.ObjectId(organizationId),
+            projectId: new mongoose.Types.ObjectId(projectId),
+            apiId: new mongoose.Types.ObjectId(apiId),
+            _id: {
+              $ne: new mongoose.Types.ObjectId(endpointId)
+            },
+            status: { $ne: "archived" }
+          },
+          { session }
+        )
+        .toArray();
+
+      const conflictingEndpoint = existingEndpoints.find((existing) =>
+        hasRouteConflict(
+          {
+            method: existing.method,
+            path: existing.path
+          },
+          {
+            method: finalMethod,
+            path: finalPath
+          }
+        )
+      );
+
+      if (conflictingEndpoint) {
+        throw new Error(
+          `Route conflict: ${finalMethod} ${finalPath} conflicts with existing endpoint ${conflictingEndpoint.method} ${conflictingEndpoint.path}`
+        );
+      }
+
+      // -----------------------------
+      // Update endpoint
+      // -----------------------------
+
+      return APIEndpoint.findOneAndUpdate(
+        {
+          _id: endpointId,
+          apiId,
+          apiVersionId,
+          projectId,
+          organizationId
+        },
+        {
+          $set: updateData
+        },
+        {
+          new: true,
+          runValidators: true,
+          session
+        }
+      );
     }
   );
 };
@@ -390,25 +473,44 @@ export const archiveAPIEndpoint = async (
   projectId: string,
   organizationId: string
 ) => {
-  return APIEndpoint.findOneAndUpdate(
+  return withDraftVersionTransaction(
     {
-      _id: endpointId,
-      apiId,
-      apiVersionId,
-      projectId,
       organizationId,
-      status: {
-        $ne: "archived"
-      }
+      projectId,
+      apiId,
+      apiVersionId
     },
-    {
-      $set: {
-        status: "archived"
+    async (session) => {
+      const endpoint = await APIEndpoint.findOneAndUpdate(
+        {
+          _id: endpointId,
+          apiId,
+          apiVersionId,
+          projectId,
+          organizationId,
+          status: {
+            $ne: "archived"
+          }
+        },
+        {
+          $set: {
+            status: "archived"
+          }
+        },
+        {
+          new: true,
+          runValidators: true,
+          session
+        }
+      );
+
+      if (!endpoint) {
+        throw new Error(
+          "API endpoint not found or already archived"
+        );
       }
-    },
-    {
-      new: true,
-      runValidators: true
+
+      return endpoint;
     }
   );
 };

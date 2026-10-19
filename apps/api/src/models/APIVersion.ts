@@ -2,6 +2,7 @@ import mongoose, { Document, Schema } from "mongoose";
 
 export type APIVersionStatus =
     | "draft"
+    | "publishing"
     | "active"
     | "deprecated"
     | "archived";
@@ -15,6 +16,9 @@ export interface IAPIVersion extends Document {
     basePath?: string;
     description?: string;
     status: APIVersionStatus;
+    publishingToken?: string;
+    publishingStartedAt?: Date;
+    definitionRevision: number;
     createdBy: mongoose.Types.ObjectId;
     createdAt: Date;
     updatedAt: Date;
@@ -69,6 +73,7 @@ const apiVersionSchema = new Schema<IAPIVersion>(
             type: String,
             enum: [
                 "draft",
+                "publishing",
                 "active",
                 "deprecated",
                 "archived"
@@ -76,7 +81,21 @@ const apiVersionSchema = new Schema<IAPIVersion>(
             default: "draft",
             index: true
         },
+        publishingToken: {
+            type: String,
+            default: undefined
+        },
 
+        publishingStartedAt: {
+            type: Date,
+            default: undefined
+        },
+        definitionRevision: {
+            type: Number,
+            default: 0,
+            min: 0,
+            required: true
+        },
         createdBy: {
             type: Schema.Types.ObjectId,
             ref: "User",
@@ -106,14 +125,24 @@ apiVersionSchema.index({
 });
 
 apiVersionSchema.index(
-    {
-        apiId: 1
-    },
+    { apiId: 1 },
     {
         unique: true,
         partialFilterExpression: {
-            status: "active"
-        }
+            status: "publishing",
+        },
+        name: "unique_publishing_version_per_api",
+    }
+);
+
+apiVersionSchema.index(
+    { apiId: 1 },
+    {
+        unique: true,
+        partialFilterExpression: {
+            status: "active",
+        },
+        name: "unique_active_version_per_api",
     }
 );
 

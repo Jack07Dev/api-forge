@@ -2,6 +2,11 @@ import { Router } from "express";
 
 import { create, list, getById, updateStatus, update, activate } from "../controllers/api-version.controller.js";
 
+import {
+  validateForPublishing,
+  publish
+} from "../controllers/api-publishing.controller.js";
+
 import { authenticate } from "../middlewares/auth.middleware.js";
 
 import {
@@ -55,6 +60,22 @@ router.post(
   requireOrganizationMember,
   requireRole("owner", "admin"),
   activate
+);
+
+router.post(
+  "/:organizationId/projects/:projectId/apis/:apiId/versions/:versionId/publish/validate",
+  authenticate,
+  requireOrganizationMember,
+  requireRole("owner", "admin"),
+  validateForPublishing
+);
+
+router.post(
+  "/:organizationId/projects/:projectId/apis/:apiId/versions/:versionId/publish",
+  authenticate,
+  requireOrganizationMember,
+  requireRole("owner", "admin"),
+  publish
 );
 
 export default router;

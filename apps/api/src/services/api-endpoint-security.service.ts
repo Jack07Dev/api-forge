@@ -2,6 +2,9 @@ import mongoose from "mongoose";
 
 import APIEndpoint from "../models/APIEndpoint.js";
 import APIEndpointSecurity from "../models/APIEndpointSecurity.js";
+import {
+    withDraftVersionTransaction,
+} from "./api-version-guard.service.js";
 
 type SecurityType = "none" | "apiKey" | "bearer";
 
@@ -75,30 +78,6 @@ export const createEndpointSecurity = async (
         bearer,
     } = input;
 
-    // Validate endpoint hierarchy
-    const endpoint = await APIEndpoint.findOne({
-        _id: endpointId,
-        organizationId,
-        projectId,
-        apiId,
-        apiVersionId,
-        status: { $ne: "archived" },
-    });
-
-    if (!endpoint) {
-        throw new Error("ENDPOINT_NOT_FOUND");
-    }
-
-    // Prevent duplicate configuration
-    const existingSecurity = await APIEndpointSecurity.findOne({
-        endpointId,
-    });
-
-    if (existingSecurity) {
-        throw new Error("SECURITY_ALREADY_EXISTS");
-    }
-
-    // Validate API key configuration
     if (type === "apiKey") {
         if (
             !apiKey ||
@@ -110,7 +89,6 @@ export const createEndpointSecurity = async (
         }
     }
 
-    // Validate bearer configuration
     if (
         type === "bearer" &&
         bearer?.bearerFormat !== undefined &&
@@ -122,40 +100,71 @@ export const createEndpointSecurity = async (
         throw new Error("INVALID_BEARER_CONFIG");
     }
 
-    // Save security configuration
-    const security = await APIEndpointSecurity.create({
-        organizationId: new mongoose.Types.ObjectId(organizationId),
-        projectId: new mongoose.Types.ObjectId(projectId),
-        apiId: new mongoose.Types.ObjectId(apiId),
-        apiVersionId: new mongoose.Types.ObjectId(apiVersionId),
-        endpointId: new mongoose.Types.ObjectId(endpointId),
-        createdBy: new mongoose.Types.ObjectId(createdBy),
+    return withDraftVersionTransaction(
+        { organizationId, projectId, apiId, apiVersionId },
+        async (session) => {
+            const endpoint = await APIEndpoint.findOne({
+                _id: endpointId,
+                organizationId,
+                projectId,
+                apiId,
+                apiVersionId,
+                status: { $ne: "archived" },
+            }).session(session);
 
-        type,
-
-        ...(type === "apiKey"
-            ? {
-                apiKey: {
-                    name: apiKey!.name.trim(),
-                    in: "header",
-                },
+            if (!endpoint) {
+                throw new Error("ENDPOINT_NOT_FOUND");
             }
-            : {}),
 
-        ...(type === "bearer" && bearer
-            ? {
-                bearer: {
-                    ...(bearer.bearerFormat
-                        ? {
-                            bearerFormat: bearer.bearerFormat.trim(),
-                        }
-                        : {}),
-                },
+            const existingSecurity =
+                await APIEndpointSecurity.findOne({
+                    endpointId,
+                }).session(session);
+
+            if (existingSecurity) {
+                throw new Error("SECURITY_ALREADY_EXISTS");
             }
-            : {}),
-    });
 
-    return security;
+            const [security] = await APIEndpointSecurity.create(
+                [
+                    {
+                        organizationId: new mongoose.Types.ObjectId(organizationId),
+                        projectId: new mongoose.Types.ObjectId(projectId),
+                        apiId: new mongoose.Types.ObjectId(apiId),
+                        apiVersionId: new mongoose.Types.ObjectId(apiVersionId),
+                        endpointId: new mongoose.Types.ObjectId(endpointId),
+                        createdBy: new mongoose.Types.ObjectId(createdBy),
+
+                        type,
+
+                        ...(type === "apiKey"
+                            ? {
+                                apiKey: {
+                                    name: apiKey!.name.trim(),
+                                    in: "header",
+                                },
+                            }
+                            : {}),
+
+                        ...(type === "bearer" && bearer
+                            ? {
+                                bearer: {
+                                    ...(bearer.bearerFormat
+                                        ? {
+                                            bearerFormat: bearer.bearerFormat.trim(),
+                                        }
+                                        : {}),
+                                },
+                            }
+                            : {}),
+                    },
+                ],
+                { session }
+            );
+
+            return security;
+        }
+    );
 };
 
 export const getEndpointSecurity = async (
@@ -213,34 +222,6 @@ export const updateEndpointSecurity = async (
         bearer,
     } = input;
 
-    // 1. Verify endpoint hierarchy
-    const endpoint = await APIEndpoint.findOne({
-        _id: endpointId,
-        organizationId,
-        projectId,
-        apiId,
-        apiVersionId,
-        status: { $ne: "archived" },
-    });
-
-    if (!endpoint) {
-        throw new Error("ENDPOINT_NOT_FOUND");
-    }
-
-    // 2. Find existing security configuration
-    const security = await APIEndpointSecurity.findOne({
-        endpointId,
-        organizationId,
-        projectId,
-        apiId,
-        apiVersionId,
-    });
-
-    if (!security) {
-        throw new Error("SECURITY_NOT_FOUND");
-    }
-
-    // 3. Validate security type and related configuration
     if (type === "apiKey") {
         if (
             !apiKey ||
@@ -263,31 +244,60 @@ export const updateEndpointSecurity = async (
         throw new Error("INVALID_BEARER_CONFIG");
     }
 
-    // 4. Replace the selected security configuration
-    // and remove metadata belonging to the previous type.
-    security.type = type;
-    security.set("apiKey", undefined);
-    security.set("bearer", undefined);
+    return withDraftVersionTransaction(
+        { organizationId, projectId, apiId, apiVersionId },
+        async (session) => {
+            const endpoint = await APIEndpoint.findOne({
+                _id: endpointId,
+                organizationId,
+                projectId,
+                apiId,
+                apiVersionId,
+                status: { $ne: "archived" },
+            }).session(session);
 
-    if (type === "apiKey" && apiKey) {
-        security.set("apiKey", {
-            name: apiKey.name.trim(),
-            in: "header",
-        });
-    }
+            if (!endpoint) {
+                throw new Error("ENDPOINT_NOT_FOUND");
+            }
 
-    if (type === "bearer" && bearer) {
-        security.set("bearer", {
-            ...(bearer.bearerFormat
-                ? { bearerFormat: bearer.bearerFormat.trim() }
-                : {}),
-        });
-    }
+            const security = await APIEndpointSecurity.findOne({
+                endpointId,
+                organizationId,
+                projectId,
+                apiId,
+                apiVersionId,
+            }).session(session);
 
-    // 5. Save the updated configuration
-    await security.save();
+            if (!security) {
+                throw new Error("SECURITY_NOT_FOUND");
+            }
 
-    return security;
+            security.type = type;
+
+            // Remove configuration belonging to the previous type.
+            security.set("apiKey", undefined);
+            security.set("bearer", undefined);
+
+            if (type === "apiKey" && apiKey) {
+                security.set("apiKey", {
+                    name: apiKey.name.trim(),
+                    in: "header",
+                });
+            }
+
+            if (type === "bearer" && bearer) {
+                security.set("bearer", {
+                    ...(bearer.bearerFormat
+                        ? { bearerFormat: bearer.bearerFormat.trim() }
+                        : {}),
+                });
+            }
+
+            await security.save({ session });
+
+            return security;
+        }
+    );
 };
 
 export const deleteEndpointSecurity = async (
@@ -301,38 +311,43 @@ export const deleteEndpointSecurity = async (
         endpointId,
     } = input;
 
-    // 1. Verify endpoint hierarchy
-    const endpoint = await APIEndpoint.findOne({
-        _id: endpointId,
-        organizationId,
-        projectId,
-        apiId,
-        apiVersionId,
-        status: { $ne: "archived" },
-    });
+    return withDraftVersionTransaction(
+        { organizationId, projectId, apiId, apiVersionId },
+        async (session) => {
+            const endpoint = await APIEndpoint.findOne({
+                _id: endpointId,
+                organizationId,
+                projectId,
+                apiId,
+                apiVersionId,
+                status: { $ne: "archived" },
+            }).session(session);
 
-    if (!endpoint) {
-        throw new Error("ENDPOINT_NOT_FOUND");
-    }
+            if (!endpoint) {
+                throw new Error("ENDPOINT_NOT_FOUND");
+            }
 
-    // 2. Delete security configuration within the same hierarchy
-    const deletedSecurity =
-        await APIEndpointSecurity.findOneAndDelete({
-            endpointId,
-            organizationId,
-            projectId,
-            apiId,
-            apiVersionId,
-        });
+            const deletedSecurity =
+                await APIEndpointSecurity.findOneAndDelete(
+                    {
+                        endpointId,
+                        organizationId,
+                        projectId,
+                        apiId,
+                        apiVersionId,
+                    },
+                    { session }
+                );
 
-    if (!deletedSecurity) {
-        throw new Error("SECURITY_NOT_FOUND");
-    }
+            if (!deletedSecurity) {
+                throw new Error("SECURITY_NOT_FOUND");
+            }
 
-    // 3. Return deletion summary
-    return {
-        id: deletedSecurity._id,
-        endpointId: deletedSecurity.endpointId,
-        type: deletedSecurity.type,
-    };
+            return {
+                id: deletedSecurity._id,
+                endpointId: deletedSecurity.endpointId,
+                type: deletedSecurity.type,
+            };
+        }
+    );
 };

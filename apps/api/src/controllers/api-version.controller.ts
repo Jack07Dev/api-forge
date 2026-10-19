@@ -8,7 +8,6 @@ import {
     getAPIVersionById,
     updateAPIVersionStatus,
     updateAPIVersion,
-    activateAPIVersion
 } from "../services/api-version.service.js";
 
 export const create = async (
@@ -277,36 +276,31 @@ export const updateStatus = async (
         const { status } = req.body;
 
         const allowedStatuses = [
-            "draft",
-            "active",
             "deprecated",
             "archived"
-        ];
+        ] as const;
 
         if (
             typeof status !== "string" ||
-            !allowedStatuses.includes(status)
+            !allowedStatuses.includes(
+                status as (typeof allowedStatuses)[number]
+            )
         ) {
             res.status(400).json({
                 success: false,
                 message:
-                    "Invalid status. Allowed values: draft, active, deprecated, archived"
+                    "Direct status updates only support deprecated and archived. Use the publishing workflow to activate a version."
             });
             return;
         }
 
-        const updatedVersion =
-            await updateAPIVersionStatus({
-                versionId,
-                apiId,
-                projectId,
-                organizationId: req.organization.id,
-                status: status as
-                    | "draft"
-                    | "active"
-                    | "deprecated"
-                    | "archived"
-            });
+        const updatedVersion = await updateAPIVersionStatus({
+            versionId,
+            apiId,
+            projectId,
+            organizationId: req.organization.id,
+            status: status as "deprecated" | "archived"
+        });
 
         res.status(200).json({
             success: true,
@@ -328,7 +322,11 @@ export const updateStatus = async (
         const statusCode =
             message === "API version not found"
                 ? 404
-                : 400;
+                : message.startsWith("Invalid status transition") ||
+                    message.startsWith("Cannot deprecate") ||
+                    message.includes("status changed during the operation")
+                    ? 409
+                    : 400;
 
         res.status(statusCode).json({
             success: false,
@@ -342,12 +340,23 @@ export const update = async (
     res: Response
 ): Promise<void> => {
     try {
+        // Step 1: Verify authentication and organization
+        if (!req.user || !req.organization) {
+            res.status(401).json({
+                success: false,
+                message: "Authentication required"
+            });
+            return;
+        }
+
+        // Step 2: Extract route parameters
         const {
             projectId,
             apiId,
             versionId
         } = req.params;
 
+        // Step 3: Validate project ID
         if (
             typeof projectId !== "string" ||
             !mongoose.Types.ObjectId.isValid(projectId)
@@ -359,6 +368,7 @@ export const update = async (
             return;
         }
 
+        // Step 4: Validate API ID
         if (
             typeof apiId !== "string" ||
             !mongoose.Types.ObjectId.isValid(apiId)
@@ -370,6 +380,7 @@ export const update = async (
             return;
         }
 
+        // Step 5: Validate version ID
         if (
             typeof versionId !== "string" ||
             !mongoose.Types.ObjectId.isValid(versionId)
@@ -381,24 +392,26 @@ export const update = async (
             return;
         }
 
+        // Step 6: Extract request body
         const { basePath, description } = req.body;
 
+        // Step 7: Update API version
         const apiVersion = await updateAPIVersion({
             versionId,
             apiId,
             projectId,
-            organizationId:
-                req.organization!.id,
+            organizationId: req.organization.id,
             basePath,
             description
         });
 
+        // Step 8: Return success response
         res.status(200).json({
             success: true,
-            message:
-                "API version updated successfully",
+            message: "API version updated successfully",
             data: apiVersion
         });
+
     } catch (error) {
         console.error(
             "Update API version error:",
@@ -419,71 +432,9 @@ export const activate = async (
     req: AuthenticatedRequest,
     res: Response
 ): Promise<void> => {
-    try {
-        const {
-            projectId,
-            apiId,
-            versionId
-        } = req.params;
-
-        if (
-            typeof projectId !== "string" ||
-            !mongoose.Types.ObjectId.isValid(projectId)
-        ) {
-            res.status(400).json({
-                success: false,
-                message: "Invalid project ID"
-            });
-            return;
-        }
-
-        if (
-            typeof apiId !== "string" ||
-            !mongoose.Types.ObjectId.isValid(apiId)
-        ) {
-            res.status(400).json({
-                success: false,
-                message: "Invalid API ID"
-            });
-            return;
-        }
-
-        if (
-            typeof versionId !== "string" ||
-            !mongoose.Types.ObjectId.isValid(versionId)
-        ) {
-            res.status(400).json({
-                success: false,
-                message: "Invalid version ID"
-            });
-            return;
-        }
-
-        const apiVersion = await activateAPIVersion({
-            versionId,
-            apiId,
-            projectId,
-            organizationId: req.organization!.id
-        });
-
-        res.status(200).json({
-            success: true,
-            message:
-                "API version activated successfully",
-            data: apiVersion
-        });
-    } catch (error) {
-        console.error(
-            "Activate API version error:",
-            error
-        );
-
-        res.status(400).json({
-            success: false,
-            message:
-                error instanceof Error
-                    ? error.message
-                    : "Failed to activate API version"
-        });
-    }
+    res.status(409).json({
+        success: false,
+        message:
+            "Direct activation is disabled. Use the validated API publishing workflow.",
+    });
 };

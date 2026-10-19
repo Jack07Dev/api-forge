@@ -5,9 +5,15 @@
   "main": "index.js",
   "type": "module",
   "scripts": {
-    "dev": "tsx watch src/server.ts",
+    "dev": "node --env-file=.env.development --import tsx --watch src/server.ts",
     "build": "tsc",
-    "start": "node dist/server.js"
+    "start": "node dist/server.js",
+    "start:dev": "node --env-file=.env.development dist/server.js",
+    "test": "npm run test:node && npm run test:vitest",
+    "test:node": "node --env-file=.env.test --import tsx --test $(find src/tests -maxdepth 1 -name '*.test.ts' ! -name 'api-publishing-abort.test.ts' -print)",
+    "test:vitest": "NODE_ENV=test vitest run src/tests/api-publishing-abort.test.ts",
+    "test:publishing-abort": "npm run test:vitest",
+    "test:transaction": "node --env-file=.env.test --import tsx --test src/tests/api-publishing-transaction.test.ts"
   },
   "keywords": [],
   "author": "",
@@ -32,8 +38,11 @@
     "@types/express": "^5.0.6",
     "@types/jsonwebtoken": "^9.0.10",
     "@types/node": "^26.6.2",
+    "@types/supertest": "^7.2.1",
     "@types/swagger-ui-express": "^4.1.8",
+    "supertest": "^7.3.1",
     "tsx": "^4.23.15",
-    "typescript": "^7.0.2"
+    "typescript": "^7.0.2",
+    "vitest": "^5.0.3"
   }
 }
