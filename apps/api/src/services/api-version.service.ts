@@ -3,6 +3,7 @@ import APIVersion, {
     APIVersionStatus
 } from "../models/APIVersion.js";
 import API from "../models/API.js";
+import { withDraftVersionTransaction } from "./api-version-guard.service.js";
 
 interface CreateAPIVersionInput {
     apiId: string;
@@ -33,6 +34,9 @@ interface ActivateAPIVersionInput {
     apiId: string;
     projectId: string;
     organizationId: string;
+    publishingToken: string;
+    definitionRevision: number;
+    now?: () => number;
 }
 
 
@@ -111,25 +115,6 @@ export const getAPIVersionById = async (
     });
 };
 
-const isValidStatusTransition = (
-    currentStatus: APIVersionStatus,
-    nextStatus: APIVersionStatus
-): boolean => {
-    const allowedTransitions: Record<
-        APIVersionStatus,
-        APIVersionStatus[]
-    > = {
-        draft: ["active"],
-        active: ["deprecated"],
-        deprecated: ["archived"],
-        archived: []
-    };
-
-    return allowedTransitions[currentStatus].includes(
-        nextStatus
-    );
-};
-
 export const updateAPIVersionStatus = async ({
     versionId,
     apiId,
@@ -137,77 +122,91 @@ export const updateAPIVersionStatus = async ({
     organizationId,
     status
 }: UpdateAPIVersionStatusInput) => {
-    const apiVersion = await APIVersion.findOne({
-        _id: versionId,
-        apiId,
-        projectId,
-        organizationId
+
+    // Direct publishing and activation are forbidden.
+    if (status === "active" || status === "publishing") {
+        throw new Error(
+            "Use the API publishing workflow to change publishing or active status"
+        );
+    }
+
+    // The only supported administrative transitions.
+    const previousStatus: Record<string, APIVersionStatus> = {
+        deprecated: "active",
+        archived: "deprecated"
+    };
+
+    const expectedStatus = previousStatus[status];
+
+    if (!expectedStatus) {
+        throw new Error(
+            `Direct transition to ${status} is not allowed`
+        );
+    }
+
+    return mongoose.connection.transaction(async (session) => {
+
+        const apiVersion = await APIVersion.findOne({
+            _id: versionId,
+            apiId,
+            projectId,
+            organizationId
+        }).session(session);
+
+        if (!apiVersion) {
+            throw new Error("API version not found");
+        }
+
+        if (apiVersion.status !== expectedStatus) {
+            throw new Error(
+                `Invalid status transition from ${apiVersion.status} to ${status}`
+            );
+        }
+
+        // Deprecation is allowed only when another active
+        // version exists.
+        if (status === "deprecated") {
+            const replacementVersion = await APIVersion.findOne({
+                apiId,
+                projectId,
+                organizationId,
+                status: "active",
+                _id: { $ne: versionId }
+            }).session(session);
+
+            if (!replacementVersion) {
+                throw new Error(
+                    "Cannot deprecate the active version without another active version"
+                );
+            }
+        }
+
+        const updatedVersion = await APIVersion.findOneAndUpdate(
+            {
+                _id: versionId,
+                apiId,
+                projectId,
+                organizationId,
+                status: expectedStatus
+            },
+            {
+                $set: { status }
+            },
+            {
+                returnDocument: "after",
+                runValidators: true,
+                session
+            }
+        );
+
+        if (!updatedVersion) {
+            throw new Error(
+                "API version status changed during the operation"
+            );
+        }
+
+        return updatedVersion;
     });
-
-    if (!apiVersion) {
-        throw new Error("API version not found");
-    }
-
-    if (apiVersion.status === status) {
-        throw new Error(
-            `API version is already ${status}`
-        );
-    }
-
-    if (
-        !isValidStatusTransition(
-            apiVersion.status,
-            status
-        )
-    ) {
-        throw new Error(
-            `Invalid status transition from ${apiVersion.status} to ${status}`
-        );
-    }
-
-    if (status === "active") {
-        const existingActiveVersion =
-            await APIVersion.findOne({
-                apiId,
-                projectId,
-                organizationId,
-                status: "active",
-                _id: {
-                    $ne: versionId
-                }
-            });
-
-        if (existingActiveVersion) {
-            throw new Error(
-                `API already has an active version: ${existingActiveVersion.versionLabel}`
-            );
-        }
-    }
-
-    if (status === "deprecated") {
-        const replacementVersion =
-            await APIVersion.findOne({
-                apiId,
-                projectId,
-                organizationId,
-                status: "active",
-                _id: {
-                    $ne: versionId
-                }
-            });
-
-        if (!replacementVersion) {
-            throw new Error(
-                "Cannot deprecate the active version without another active version"
-            );
-        }
-    }
-
-    apiVersion.status = status;
-
-    await apiVersion.save();
-
-    return apiVersion;
 };
 
 export const updateAPIVersion = async ({
@@ -229,12 +228,23 @@ export const updateAPIVersion = async ({
         throw new Error("API version not found");
     }
 
+    // Published versions must not be edited directly.
+    if (apiVersion.status !== "draft") {
+        throw new Error(
+            `Cannot modify API version with status ${apiVersion.status}`
+        );
+    }
+
     const updateData: {
         basePath?: string;
         description?: string;
     } = {};
 
     if (basePath !== undefined) {
+        if (typeof basePath !== "string") {
+            throw new Error("Base path must be a string");
+        }
+
         const trimmedBasePath = basePath.trim();
 
         if (!trimmedBasePath) {
@@ -279,6 +289,10 @@ export const updateAPIVersion = async ({
     }
 
     if (description !== undefined) {
+        if (typeof description !== "string") {
+            throw new Error("Description must be a string");
+        }
+
         const trimmedDescription = description.trim();
 
         if (trimmedDescription.length > 500) {
@@ -297,85 +311,130 @@ export const updateAPIVersion = async ({
         );
     }
 
-    return APIVersion.findOneAndUpdate(
+    const updatedVersion = await withDraftVersionTransaction(
         {
-            _id: versionId,
-            apiId,
+            organizationId,
             projectId,
-            organizationId
+            apiId,
+            apiVersionId: versionId,
         },
-        {
-            $set: updateData
-        },
-        {
-            new: true,
-            runValidators: true
+        async (session) => {
+            const updated = await APIVersion.findOneAndUpdate(
+                {
+                    _id: versionId,
+                    apiId,
+                    projectId,
+                    organizationId,
+                    status: "draft",
+                },
+                {
+                    $set: updateData,
+                },
+                {
+                    returnDocument: "after",
+                    runValidators: true,
+                    session,
+                }
+            );
+
+            if (!updated) {
+                throw new Error(
+                    "API version not found or is no longer editable"
+                );
+            }
+
+            return updated;
         }
     );
+
+    return updatedVersion;
 };
 
 export const activateAPIVersion = async ({
     versionId,
     apiId,
     projectId,
-    organizationId
+    organizationId,
+    publishingToken,
+    definitionRevision,
+    now = Date.now
 }: ActivateAPIVersionInput) => {
-    const session = await mongoose.startSession();
+    return mongoose.connection.transaction(async (session) => {
 
-    try {
-        let activatedVersion;
+        // Publishing lock must have been renewed within 10 minutes.
+        const publishingLockCutoff = new Date(
+            now() - 10 * 60 * 1000
+        );
 
-        await session.withTransaction(async () => {
-            const apiVersion = await APIVersion.findOne({
+        // Step 1: Verify lock ownership and expiration.
+        const apiVersion = await APIVersion.findOne({
+            _id: versionId,
+            apiId,
+            projectId,
+            organizationId,
+            status: "publishing",
+            publishingToken,
+            definitionRevision,
+            publishingStartedAt: {
+                $gte: publishingLockCutoff,
+            },
+        }).session(session);
+
+        if (!apiVersion) {
+            throw new Error(
+                "Publishing lock is invalid, expired, or API definition has changed"
+            );
+        }
+
+        // Step 2: Find the currently active version.
+        const currentActiveVersion = await APIVersion.findOne({
+            apiId,
+            projectId,
+            organizationId,
+            status: "active",
+            _id: { $ne: versionId },
+        }).session(session);
+
+        // Step 3: Deprecate the previous active version.
+        if (currentActiveVersion) {
+            currentActiveVersion.status = "deprecated";
+            await currentActiveVersion.save({ session });
+        }
+
+        // Step 4: Recheck lock ownership and expiration.
+        const activatedVersion = await APIVersion.findOneAndUpdate(
+            {
                 _id: versionId,
                 apiId,
                 projectId,
-                organizationId
-            }).session(session);
-
-            if (!apiVersion) {
-                throw new Error("API version not found");
+                organizationId,
+                status: "publishing",
+                publishingToken,
+                definitionRevision,
+                publishingStartedAt: {
+                    $gte: new Date(now() - 10 * 60 * 1000),
+                },
+            },
+            {
+                $set: {
+                    status: "active",
+                },
+                $unset: {
+                    publishingToken: "",
+                    publishingStartedAt: "",
+                },
+            },
+            {
+                returnDocument: "after",
+                runValidators: true,
+                session,
             }
+        );
 
-            if (apiVersion.status === "active") {
-                throw new Error(
-                    "API version is already active"
-                );
-            }
-
-            if (apiVersion.status !== "draft") {
-                throw new Error(
-                    `Cannot activate API version from ${apiVersion.status} status`
-                );
-            }
-
-            const currentActiveVersion =
-                await APIVersion.findOne({
-                    apiId,
-                    projectId,
-                    organizationId,
-                    status: "active"
-                }).session(session);
-
-            if (currentActiveVersion) {
-                currentActiveVersion.status = "deprecated";
-
-                await currentActiveVersion.save({
-                    session
-                });
-            }
-
-            apiVersion.status = "active";
-
-            await apiVersion.save({
-                session
-            });
-
-            activatedVersion = apiVersion;
-        });
+        if (!activatedVersion) {
+            throw new Error("Publishing lock expired or ownership changed");
+        }
 
         return activatedVersion;
-    } finally {
-        await session.endSession();
-    }
+    });
 };

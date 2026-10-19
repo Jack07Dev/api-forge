@@ -3,6 +3,7 @@ import mongoose from "mongoose";
 import APIEndpoint from "../models/APIEndpoint.js";
 import APIEndpointRequestBody from "../models/APIEndpointRequestBody.js";
 import APIModel from "../models/APIModel.js";
+import { assertDraftAPIVersion, withDraftVersionTransaction } from "./api-version-guard.service.js";
 
 interface CreateRequestBodyInput {
     endpointId: string;
@@ -54,76 +55,92 @@ export const createEndpointRequestBody = async ({
     modelId,
     contentType,
     required,
-    userId
+    userId,
 }: CreateRequestBodyInput) => {
-    // 1. Verify endpoint and ownership
-    const endpoint = await APIEndpoint.findOne({
-        _id: endpointId,
-        apiId,
-        apiVersionId,
-        projectId,
-        organizationId,
-        status: { $ne: "archived" }
-    });
-
-    if (!endpoint) {
-        throw new Error("API endpoint not found");
-    }
-
-    // 2. Only POST, PUT, PATCH can have request bodies in this MVP
-    if (!["POST", "PUT", "PATCH"].includes(endpoint.method)) {
-        throw new Error(
-            "Request body is only supported for POST, PUT and PATCH endpoints"
-        );
-    }
-
-    // 3. Validate content type
+    // Validate before starting the transaction.
     if (contentType !== "application/json") {
         throw new Error("Unsupported content type");
     }
 
-    // 4. Validate model ID
     if (!mongoose.Types.ObjectId.isValid(modelId)) {
         throw new Error("Invalid model ID");
     }
 
-    // 5. Verify API Model belongs to same API version
-    // APIModel uses versionId, not apiVersionId
-    const model = await APIModel.findOne({
-        _id: modelId,
-        apiId,
-        versionId: apiVersionId,
-        projectId,
-        organizationId
-    });
+    return withDraftVersionTransaction(
+        {
+            organizationId,
+            projectId,
+            apiId,
+            apiVersionId,
+        },
+        async (session) => {
+            // 1. Verify endpoint and ownership.
+            const endpoint = await APIEndpoint.findOne({
+                _id: endpointId,
+                apiId,
+                apiVersionId,
+                projectId,
+                organizationId,
+                status: { $ne: "archived" },
+            }).session(session);
 
-    if (!model) {
-        throw new Error("API model not found");
-    }
+            if (!endpoint) {
+                throw new Error("API endpoint not found");
+            }
 
-    // 6. Prevent duplicate request body configuration
-    const existing = await APIEndpointRequestBody.findOne({
-        endpointId
-    });
+            // 2. Only POST, PUT and PATCH support request bodies.
+            if (!["POST", "PUT", "PATCH"].includes(endpoint.method)) {
+                throw new Error(
+                    "Request body is only supported for POST, PUT and PATCH endpoints"
+                );
+            }
 
-    if (existing) {
-        throw new Error(
-            "Request body configuration already exists for this endpoint"
-        );
-    }
+            // 3. Verify API model belongs to the same API version.
+            // APIModel uses versionId, not apiVersionId.
+            const model = await APIModel.findOne({
+                _id: modelId,
+                apiId,
+                versionId: apiVersionId,
+                projectId,
+                organizationId,
+            }).session(session);
 
-    // 7. Create configuration
-    return APIEndpointRequestBody.create({
-        endpointId,
-        apiId,
-        apiVersionId,
-        projectId,
-        organizationId,
-        modelId,
-        contentType,
-        required: required ?? true,
-        createdBy: userId
-    });
+            if (!model) {
+                throw new Error("API model not found");
+            }
+
+            // 4. Prevent duplicate request body configuration.
+            const existing = await APIEndpointRequestBody.findOne({
+                endpointId,
+            }).session(session);
+
+            if (existing) {
+                throw new Error(
+                    "Request body configuration already exists for this endpoint"
+                );
+            }
+
+            // 5. Create using the same MongoDB session.
+            const [requestBody] = await APIEndpointRequestBody.create(
+                [
+                    {
+                        endpointId,
+                        apiId,
+                        apiVersionId,
+                        projectId,
+                        organizationId,
+                        modelId,
+                        contentType,
+                        required: required ?? true,
+                        createdBy: userId,
+                    },
+                ],
+                { session }
+            );
+
+            return requestBody;
+        }
+    );
 };
 
 export const getEndpointRequestBody = async ({
@@ -171,36 +188,9 @@ export const updateEndpointRequestBody = async ({
     organizationId,
     modelId,
     contentType,
-    required
+    required,
 }: UpdateEndpointRequestBodyInput) => {
-    // 1. Verify endpoint and ownership
-    const endpoint = await APIEndpoint.findOne({
-        _id: endpointId,
-        apiId,
-        apiVersionId,
-        projectId,
-        organizationId,
-        status: { $ne: "archived" }
-    });
-
-    if (!endpoint) {
-        throw new Error("API endpoint not found");
-    }
-
-    // 2. Find existing request body
-    const requestBody = await APIEndpointRequestBody.findOne({
-        endpointId,
-        apiId,
-        apiVersionId,
-        projectId,
-        organizationId
-    });
-
-    if (!requestBody) {
-        throw new Error("Endpoint request body not found");
-    }
-
-    // 3. Validate content type if provided
+    // Validate supplied values before opening a transaction.
     if (
         contentType !== undefined &&
         contentType !== "application/json"
@@ -208,40 +198,82 @@ export const updateEndpointRequestBody = async ({
         throw new Error("Unsupported content type");
     }
 
-    // 4. Validate replacement model if provided
-    if (modelId !== undefined) {
-        if (!mongoose.Types.ObjectId.isValid(modelId)) {
-            throw new Error("Invalid model ID");
-        }
+    if (
+        modelId !== undefined &&
+        !mongoose.Types.ObjectId.isValid(modelId)
+    ) {
+        throw new Error("Invalid model ID");
+    }
 
-        // Existing APIModel uses versionId
-        const model = await APIModel.findOne({
-            _id: modelId,
-            apiId,
-            versionId: apiVersionId,
+    return withDraftVersionTransaction(
+        {
+            organizationId,
             projectId,
-            organizationId
-        });
+            apiId,
+            apiVersionId,
+        },
+        async (session) => {
+            // 1. Verify endpoint and ownership.
+            const endpoint = await APIEndpoint.findOne({
+                _id: endpointId,
+                apiId,
+                apiVersionId,
+                projectId,
+                organizationId,
+                status: { $ne: "archived" },
+            }).session(session);
 
-        if (!model) {
-            throw new Error("API model not found");
+            if (!endpoint) {
+                throw new Error("API endpoint not found");
+            }
+
+            // 2. Find existing request body.
+            const requestBody =
+                await APIEndpointRequestBody.findOne({
+                    endpointId,
+                    apiId,
+                    apiVersionId,
+                    projectId,
+                    organizationId,
+                }).session(session);
+
+            if (!requestBody) {
+                throw new Error("Endpoint request body not found");
+            }
+
+            // 3. Validate replacement model.
+            if (modelId !== undefined) {
+                const model = await APIModel.findOne({
+                    _id: modelId,
+                    apiId,
+                    versionId: apiVersionId,
+                    projectId,
+                    organizationId,
+                }).session(session);
+
+                if (!model) {
+                    throw new Error("API model not found");
+                }
+
+                requestBody.modelId =
+                    new mongoose.Types.ObjectId(modelId);
+            }
+
+            // 4. Apply updates.
+            if (contentType !== undefined) {
+                requestBody.contentType = contentType;
+            }
+
+            if (required !== undefined) {
+                requestBody.required = required;
+            }
+
+            // 5. Save using the transaction session.
+            await requestBody.save({ session });
+
+            return requestBody;
         }
-
-        requestBody.modelId = new mongoose.Types.ObjectId(modelId);
-    }
-
-    // 5. Apply changes
-    if (contentType !== undefined) {
-        requestBody.contentType = contentType;
-    }
-
-    if (required !== undefined) {
-        requestBody.required = required;
-    }
-
-    await requestBody.save();
-
-    return requestBody;
+    );
 };
 
 export const deleteEndpointRequestBody = async ({
@@ -249,35 +281,50 @@ export const deleteEndpointRequestBody = async ({
     apiId,
     apiVersionId,
     projectId,
-    organizationId
+    organizationId,
 }: DeleteEndpointRequestBodyInput) => {
-    // 1. Verify endpoint belongs to the correct hierarchy
-    const endpoint = await APIEndpoint.findOne({
-        _id: endpointId,
-        apiId,
-        apiVersionId,
-        projectId,
-        organizationId,
-        status: { $ne: "archived" }
-    });
-
-    if (!endpoint) {
-        throw new Error("API endpoint not found");
-    }
-
-    // 2. Delete only the request-body configuration
-    const requestBody =
-        await APIEndpointRequestBody.findOneAndDelete({
-            endpointId,
+    return withDraftVersionTransaction(
+        {
+            organizationId,
+            projectId,
             apiId,
             apiVersionId,
-            projectId,
-            organizationId
-        });
+        },
+        async (session) => {
+            // 1. Verify endpoint and ownership.
+            const endpoint = await APIEndpoint.findOne({
+                _id: endpointId,
+                apiId,
+                apiVersionId,
+                projectId,
+                organizationId,
+                status: { $ne: "archived" },
+            }).session(session);
 
-    if (!requestBody) {
-        throw new Error("Endpoint request body not found");
-    }
+            if (!endpoint) {
+                throw new Error("API endpoint not found");
+            }
 
-    return requestBody;
+            // 2. Delete request-body configuration.
+            const requestBody =
+                await APIEndpointRequestBody.findOneAndDelete(
+                    {
+                        endpointId,
+                        apiId,
+                        apiVersionId,
+                        projectId,
+                        organizationId,
+                    },
+                    {
+                        session,
+                    }
+                );
+
+            if (!requestBody) {
+                throw new Error("Endpoint request body not found");
+            }
+
+            return requestBody;
+        }
+    );
 };

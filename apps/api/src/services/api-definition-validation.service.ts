@@ -7,6 +7,7 @@ import APIEndpointResponse from "../models/APIEndpointResponse.js";
 import APIEndpointSecurity from "../models/APIEndpointSecurity.js";
 import APIModel from "../models/APIModel.js";
 import APIVersion from "../models/APIVersion.js";
+import { normalizeRoutePattern } from "../runtime/utils/route-conflict.js";
 
 export interface ValidationIssue {
     severity: "error" | "warning";
@@ -113,7 +114,8 @@ export const validateAPIVersionDefinition = async (
             projectId,
             apiId,
             versionId: apiVersionId,
-        }).lean(),
+            status: { $ne: "archived" },
+        }).lean()
     ]);
 
     const modelIds = new Set(
@@ -128,15 +130,17 @@ export const validateAPIVersionDefinition = async (
         const method = endpoint.method;
 
         // 4. Detect duplicate method + path combinations
-        const endpointKey = `${method}:${path}`;
+        const endpointKey =
+            `${method.toUpperCase()}:${normalizeRoutePattern(path)}`;
 
         if (seenEndpoints.has(endpointKey)) {
             errors.push({
                 severity: "error",
-                code: "DUPLICATE_ENDPOINT",
+                code: "ROUTE_CONFLICT",
                 endpointId,
                 path,
-                message: `Duplicate endpoint: ${method} ${path}`,
+                message:
+                    `Route conflict detected: ${method} ${path}`
             });
         } else {
             seenEndpoints.add(endpointKey);

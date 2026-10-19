@@ -469,169 +469,173 @@ export const update = async (
                     endpoint.updatedAt
             }
         });
-    } catch (error) {
-        console.error(
-            "Update API endpoint error:",
-            error
-        );
+    } catch (error: unknown) {
+        console.error("Update API endpoint error:", error);
 
         const message =
             error instanceof Error
                 ? error.message
                 : "Failed to update API endpoint";
 
+        // 409 — Route conflict
         if (
-            message.includes(
-                "cannot be"
-            ) ||
-            message.includes(
-                "Invalid HTTP method"
-            ) ||
-            message.includes(
-                "Invalid"
-            ) ||
-            message.includes(
-                "already exists"
-            ) ||
-            message.includes(
-                "API endpoint not found"
-            )
+            message.startsWith("Route conflict:") ||
+            message.includes("already exists")
         ) {
-            const statusCode =
-                message === "API endpoint not found"
-                    ? 404
-                    : 400;
-
-            res.status(statusCode).json({
+            res.status(409).json({
                 success: false,
                 message
             });
             return;
         }
 
+        // 404 — Endpoint not found
+        if (message === "API endpoint not found") {
+            res.status(404).json({
+                success: false,
+                message
+            });
+            return;
+        }
+
+        // 400 — Validation errors
+        if (
+            message.includes("cannot be") ||
+            message.includes("Invalid") ||
+            message.includes("must") ||
+            message.includes("required") ||
+            message.includes("cannot contain")
+        ) {
+            res.status(400).json({
+                success: false,
+                message
+            });
+            return;
+        }
+
+        // 500 — Unexpected server error
         res.status(500).json({
             success: false,
-            message:
-                "Failed to update API endpoint"
+            message: "Failed to update API endpoint"
         });
     }
 };
 
 export const archive = async (
-  req: AuthenticatedRequest,
-  res: Response
+    req: AuthenticatedRequest,
+    res: Response
 ): Promise<void> => {
-  try {
-    if (!req.user) {
-      res.status(401).json({
-        success: false,
-        message: "Authentication required"
-      });
-      return;
+    try {
+        if (!req.user) {
+            res.status(401).json({
+                success: false,
+                message: "Authentication required"
+            });
+            return;
+        }
+
+        const {
+            organizationId,
+            projectId,
+            apiId,
+            versionId,
+            endpointId
+        } = req.params;
+
+        if (
+            typeof organizationId !== "string" ||
+            typeof projectId !== "string" ||
+            typeof apiId !== "string" ||
+            typeof versionId !== "string" ||
+            typeof endpointId !== "string"
+        ) {
+            res.status(400).json({
+                success: false,
+                message:
+                    "Organization ID, project ID, API ID, version ID and endpoint ID are required"
+            });
+            return;
+        }
+
+        if (
+            !mongoose.Types.ObjectId.isValid(
+                organizationId
+            ) ||
+            !mongoose.Types.ObjectId.isValid(
+                projectId
+            ) ||
+            !mongoose.Types.ObjectId.isValid(
+                apiId
+            ) ||
+            !mongoose.Types.ObjectId.isValid(
+                versionId
+            ) ||
+            !mongoose.Types.ObjectId.isValid(
+                endpointId
+            )
+        ) {
+            res.status(400).json({
+                success: false,
+                message: "Invalid resource ID"
+            });
+            return;
+        }
+
+        const endpoint =
+            await archiveAPIEndpoint(
+                endpointId,
+                apiId,
+                versionId,
+                projectId,
+                organizationId
+            );
+
+        if (!endpoint) {
+            res.status(404).json({
+                success: false,
+                message:
+                    "API endpoint not found or already archived"
+            });
+            return;
+        }
+
+        res.status(200).json({
+            success: true,
+            message:
+                "API endpoint archived successfully",
+            data: {
+                id: endpoint._id,
+                apiId: endpoint.apiId,
+                apiVersionId:
+                    endpoint.apiVersionId,
+                projectId:
+                    endpoint.projectId,
+                organizationId:
+                    endpoint.organizationId,
+                name: endpoint.name,
+                description:
+                    endpoint.description,
+                method: endpoint.method,
+                path: endpoint.path,
+                status: endpoint.status,
+                createdBy:
+                    endpoint.createdBy,
+                createdAt:
+                    endpoint.createdAt,
+                updatedAt:
+                    endpoint.updatedAt
+            }
+        });
+    } catch (error) {
+        console.error(
+            "Archive API endpoint error:",
+            error
+        );
+
+        res.status(500).json({
+            success: false,
+            message:
+                "Failed to archive API endpoint"
+        });
     }
-
-    const {
-      organizationId,
-      projectId,
-      apiId,
-      versionId,
-      endpointId
-    } = req.params;
-
-    if (
-      typeof organizationId !== "string" ||
-      typeof projectId !== "string" ||
-      typeof apiId !== "string" ||
-      typeof versionId !== "string" ||
-      typeof endpointId !== "string"
-    ) {
-      res.status(400).json({
-        success: false,
-        message:
-          "Organization ID, project ID, API ID, version ID and endpoint ID are required"
-      });
-      return;
-    }
-
-    if (
-      !mongoose.Types.ObjectId.isValid(
-        organizationId
-      ) ||
-      !mongoose.Types.ObjectId.isValid(
-        projectId
-      ) ||
-      !mongoose.Types.ObjectId.isValid(
-        apiId
-      ) ||
-      !mongoose.Types.ObjectId.isValid(
-        versionId
-      ) ||
-      !mongoose.Types.ObjectId.isValid(
-        endpointId
-      )
-    ) {
-      res.status(400).json({
-        success: false,
-        message: "Invalid resource ID"
-      });
-      return;
-    }
-
-    const endpoint =
-      await archiveAPIEndpoint(
-        endpointId,
-        apiId,
-        versionId,
-        projectId,
-        organizationId
-      );
-
-    if (!endpoint) {
-      res.status(404).json({
-        success: false,
-        message:
-          "API endpoint not found or already archived"
-      });
-      return;
-    }
-
-    res.status(200).json({
-      success: true,
-      message:
-        "API endpoint archived successfully",
-      data: {
-        id: endpoint._id,
-        apiId: endpoint.apiId,
-        apiVersionId:
-          endpoint.apiVersionId,
-        projectId:
-          endpoint.projectId,
-        organizationId:
-          endpoint.organizationId,
-        name: endpoint.name,
-        description:
-          endpoint.description,
-        method: endpoint.method,
-        path: endpoint.path,
-        status: endpoint.status,
-        createdBy:
-          endpoint.createdBy,
-        createdAt:
-          endpoint.createdAt,
-        updatedAt:
-          endpoint.updatedAt
-      }
-    });
-  } catch (error) {
-    console.error(
-      "Archive API endpoint error:",
-      error
-    );
-
-    res.status(500).json({
-      success: false,
-      message:
-        "Failed to archive API endpoint"
-    });
-  }
 };

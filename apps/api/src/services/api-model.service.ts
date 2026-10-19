@@ -1,7 +1,9 @@
 import APIModel, {
     APIFieldType
 } from "../models/APIModel.js";
-
+import {
+    withDraftVersionTransaction,
+} from "./api-version-guard.service.js";
 import API from "../models/API.js";
 import APIVersion from "../models/APIVersion.js";
 import Project from "../models/Project.js";
@@ -296,169 +298,121 @@ export const createAPIModel = async ({
     projectId,
     organizationId,
     userId,
-    fields = []
+    fields = [],
 }: CreateAPIModelInput) => {
-    const trimmedName =
-        name.trim();
+    if (typeof name !== "string") {
+        throw new Error("Model name is required");
+    }
+
+    const trimmedName = name.trim();
 
     if (!trimmedName) {
-        throw new Error(
-            "Model name is required"
-        );
+        throw new Error("Model name is required");
     }
 
     if (trimmedName.length < 2) {
-        throw new Error(
-            "Model name must be at least 2 characters"
-        );
+        throw new Error("Model name must be at least 2 characters");
     }
 
     if (trimmedName.length > 100) {
-        throw new Error(
-            "Model name cannot exceed 100 characters"
-        );
+        throw new Error("Model name cannot exceed 100 characters");
     }
 
-    /*
-     * Model description validation
-     */
-    if (
-        description !== undefined
-    ) {
-        if (
-            typeof description !==
-            "string"
-        ) {
-            throw new Error(
-                "Model description must be a string"
-            );
+    if (description !== undefined) {
+        if (typeof description !== "string") {
+            throw new Error("Model description must be a string");
         }
 
-        if (
-            description.trim().length > 500
-        ) {
-            throw new Error(
-                "Model description cannot exceed 500 characters"
-            );
+        if (description.trim().length > 500) {
+            throw new Error("Model description cannot exceed 500 characters");
         }
     }
 
-    /*
-     * Verify project
-     */
-    const project =
-        await Project.findOne({
-            _id: projectId,
-            organizationId,
-            status: "active"
-        });
-
-    if (!project) {
-        throw new Error(
-            "Project not found or is not active"
-        );
-    }
-
-    /*
-     * Verify API
-     */
-    const api =
-        await API.findOne({
-            _id: apiId,
-            projectId,
-            organizationId
-        });
-
-    if (!api) {
-        throw new Error(
-            "API not found"
-        );
-    }
-
-    /*
-     * Verify API version
-     */
-    const apiVersion =
-        await APIVersion.findOne({
-            _id: versionId,
-            apiId,
-            projectId,
-            organizationId
-        });
-
-    if (!apiVersion) {
-        throw new Error(
-            "API version not found"
-        );
-    }
-
-    if (
-        apiVersion.status ===
-        "archived"
-    ) {
-        throw new Error(
-            "Cannot create a model for an archived API version"
-        );
-    }
-
-    /*
-     * Generate slug
-     */
-    const slug =
-        createSlug(trimmedName);
+    const slug = createSlug(trimmedName);
 
     if (!slug) {
-        throw new Error(
-            "Invalid model name"
-        );
+        throw new Error("Invalid model name");
     }
 
-    /*
-     * Check duplicate model
-     */
-    const existingModel =
-        await APIModel.findOne({
-            versionId,
-            slug
-        });
+    const normalizedFields = normalizeAndValidateFields(fields);
 
-    if (existingModel) {
-        throw new Error(
-            "A model with this name already exists in this API version"
-        );
-    }
-
-    /*
-     * Validate fields
-     */
-    const normalizedFields =
-        normalizeAndValidateFields(
-            fields
-        );
-
-    /*
-     * Create model
-     */
-    const model =
-        await APIModel.create({
-            name: trimmedName,
-            slug,
-            description:
-                description?.trim(),
-
-            apiId,
-            versionId,
-            projectId,
+    return withDraftVersionTransaction(
+        {
             organizationId,
+            projectId,
+            apiId,
+            apiVersionId: versionId,
+        },
+        async (session) => {
+            const project = await Project.findOne({
+                _id: projectId,
+                organizationId,
+                status: "active",
+            }).session(session);
 
-            fields: normalizedFields,
+            if (!project) {
+                throw new Error("Project not found or is not active");
+            }
 
-            status: "draft",
+            const api = await API.findOne({
+                _id: apiId,
+                projectId,
+                organizationId,
+            }).session(session);
 
-            createdBy: userId
-        });
+            if (!api) {
+                throw new Error("API not found");
+            }
 
-    return model;
+            const apiVersion = await APIVersion.findOne({
+                _id: versionId,
+                apiId,
+                projectId,
+                organizationId,
+            }).session(session);
+
+            if (!apiVersion) {
+                throw new Error("API version not found");
+            }
+
+            if (apiVersion.status === "archived") {
+                throw new Error(
+                    "Cannot create a model for an archived API version"
+                );
+            }
+
+            const existingModel = await APIModel.findOne({
+                versionId,
+                slug,
+            }).session(session);
+
+            if (existingModel) {
+                throw new Error(
+                    "A model with this name already exists in this API version"
+                );
+            }
+
+            const [model] = await APIModel.create(
+                [
+                    {
+                        name: trimmedName,
+                        slug,
+                        description: description?.trim(),
+                        apiId,
+                        versionId,
+                        projectId,
+                        organizationId,
+                        fields: normalizedFields,
+                        status: "draft",
+                        createdBy: userId,
+                    },
+                ],
+                { session }
+            );
+
+            return model;
+        }
+    );
 };
 
 /*
@@ -514,175 +468,126 @@ export const updateAPIModel = async ({
     organizationId,
     name,
     description,
-    fields
+    fields,
 }: UpdateAPIModelInput) => {
-    const model =
-        await APIModel.findOne({
-            _id: modelId,
-            apiId,
-            versionId,
-            projectId,
-            organizationId
-        });
-
-    if (!model) {
-        throw new Error(
-            "API model not found"
-        );
-    }
-
-    if (
-        model.status ===
-        "archived"
-    ) {
-        throw new Error(
-            "Cannot update an archived API model"
-        );
-    }
-
     const updateData: {
         name?: string;
         slug?: string;
         description?: string;
-        fields?: {
-            name: string;
-            type: APIFieldType;
-            required: boolean;
-            unique: boolean;
-            description?: string;
-        }[];
+        fields?: ReturnType<typeof normalizeAndValidateFields>;
     } = {};
 
-    /*
-     * Update name
-     */
-    if (
-        name !== undefined
-    ) {
-        const trimmedName =
-            name.trim();
+    if (name !== undefined) {
+        if (typeof name !== "string") {
+            throw new Error("Model name cannot be empty");
+        }
+
+        const trimmedName = name.trim();
 
         if (!trimmedName) {
-            throw new Error(
-                "Model name cannot be empty"
-            );
+            throw new Error("Model name cannot be empty");
         }
 
-        if (
-            trimmedName.length < 2
-        ) {
-            throw new Error(
-                "Model name must be at least 2 characters"
-            );
+        if (trimmedName.length < 2) {
+            throw new Error("Model name must be at least 2 characters");
         }
 
-        if (
-            trimmedName.length > 100
-        ) {
-            throw new Error(
-                "Model name cannot exceed 100 characters"
-            );
+        if (trimmedName.length > 100) {
+            throw new Error("Model name cannot exceed 100 characters");
         }
 
-        const slug =
-            createSlug(
-                trimmedName
-            );
+        const slug = createSlug(trimmedName);
 
         if (!slug) {
-            throw new Error(
-                "Invalid model name"
-            );
+            throw new Error("Invalid model name");
         }
 
-        const existingModel =
-            await APIModel.findOne({
-                versionId,
-                slug,
-                _id: {
-                    $ne: modelId
-                }
-            });
+        updateData.name = trimmedName;
+        updateData.slug = slug;
+    }
 
-        if (existingModel) {
-            throw new Error(
-                "A model with this name already exists in this API version"
-            );
+    if (description !== undefined) {
+        if (typeof description !== "string") {
+            throw new Error("Model description must be a string");
         }
 
-        updateData.name =
-            trimmedName;
+        const trimmedDescription = description.trim();
 
-        updateData.slug =
-            slug;
-    }
-
-    /*
-     * Update description
-     */
-    if (
-        description !== undefined
-    ) {
-        if (
-            typeof description !==
-            "string"
-        ) {
-            throw new Error(
-                "Model description must be a string"
-            );
+        if (trimmedDescription.length > 500) {
+            throw new Error("Model description cannot exceed 500 characters");
         }
 
-        const trimmedDescription =
-            description.trim();
-
-        if (
-            trimmedDescription.length >
-            500
-        ) {
-            throw new Error(
-                "Model description cannot exceed 500 characters"
-            );
-        }
-
-        updateData.description =
-            trimmedDescription;
+        updateData.description = trimmedDescription;
     }
 
-    /*
-     * Update fields
-     */
-    if (
-        fields !== undefined
-    ) {
-        updateData.fields =
-            normalizeAndValidateFields(
-                fields
-            );
+    if (fields !== undefined) {
+        updateData.fields = normalizeAndValidateFields(fields);
     }
 
-    if (
-        Object.keys(updateData)
-            .length === 0
-    ) {
-        throw new Error(
-            "At least one field is required"
-        );
+    if (Object.keys(updateData).length === 0) {
+        throw new Error("At least one field is required");
     }
 
-    return APIModel.findOneAndUpdate(
+    return withDraftVersionTransaction(
         {
-            _id: modelId,
-            apiId,
-            versionId,
+            organizationId,
             projectId,
-            organizationId
+            apiId,
+            apiVersionId: versionId,
         },
-        {
-            $set: updateData
-        },
-        {
-            new: true,
-            runValidators: true
+        async (session) => {
+            const model = await APIModel.findOne({
+                _id: modelId,
+                apiId,
+                versionId,
+                projectId,
+                organizationId,
+            }).session(session);
+
+            if (!model) {
+                throw new Error("API model not found");
+            }
+
+            if (model.status === "archived") {
+                throw new Error("Cannot update an archived API model");
+            }
+
+            if (updateData.slug !== undefined) {
+                const existingModel = await APIModel.findOne({
+                    versionId,
+                    slug: updateData.slug,
+                    _id: { $ne: modelId },
+                }).session(session);
+
+                if (existingModel) {
+                    throw new Error(
+                        "A model with this name already exists in this API version"
+                    );
+                }
+            }
+
+            const updatedModel = await APIModel.findOneAndUpdate(
+                {
+                    _id: modelId,
+                    apiId,
+                    versionId,
+                    projectId,
+                    organizationId,
+                    status: { $ne: "archived" },
+                },
+                { $set: updateData },
+                {
+                    new: true,
+                    runValidators: true,
+                    session,
+                }
+            );
+
+            if (!updatedModel) {
+                throw new Error("API model not found");
+            }
+
+            return updatedModel;
         }
     );
 };
@@ -690,42 +595,42 @@ export const updateAPIModel = async ({
 /*
  * Archive API Model
  */
-export const archiveAPIModel =
-    async (
-        modelId: string,
-        apiId: string,
-        versionId: string,
-        projectId: string,
-        organizationId: string
-    ) => {
-        const model =
-            await APIModel.findOne({
+export const archiveAPIModel = async (
+    modelId: string,
+    apiId: string,
+    versionId: string,
+    projectId: string,
+    organizationId: string
+) => {
+    return withDraftVersionTransaction(
+        {
+            organizationId,
+            projectId,
+            apiId,
+            apiVersionId: versionId,
+        },
+        async (session) => {
+            const model = await APIModel.findOne({
                 _id: modelId,
                 apiId,
                 versionId,
                 projectId,
-                organizationId
-            });
+                organizationId,
+            }).session(session);
 
-        if (!model) {
-            throw new Error(
-                "API model not found"
-            );
+            if (!model) {
+                throw new Error("API model not found");
+            }
+
+            if (model.status === "archived") {
+                throw new Error("API model is already archived");
+            }
+
+            model.status = "archived";
+
+            await model.save({ session });
+
+            return model;
         }
-
-        if (
-            model.status ===
-            "archived"
-        ) {
-            throw new Error(
-                "API model is already archived"
-            );
-        }
-
-        model.status =
-            "archived";
-
-        await model.save();
-
-        return model;
-    };
+    );
+};

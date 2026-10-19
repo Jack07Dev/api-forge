@@ -4,6 +4,9 @@ import mongoose from "mongoose";
 import APIEndpoint from "../models/APIEndpoint.js";
 import APIModel from "../models/APIModel.js";
 import APIEndpointResponse from "../models/APIEndpointResponse.js";
+import {
+    withDraftVersionTransaction,
+} from "./api-version-guard.service.js";
 
 interface CreateEndpointResponseInput {
     endpointId: string;
@@ -71,23 +74,8 @@ export const createEndpointResponse = async ({
     description,
     contentType,
     modelId,
-    userId
+    userId,
 }: CreateEndpointResponseInput) => {
-    // 1. Verify endpoint ownership and status
-    const endpoint = await APIEndpoint.findOne({
-        _id: endpointId,
-        apiId,
-        apiVersionId,
-        projectId,
-        organizationId,
-        status: { $ne: "archived" }
-    });
-
-    if (!endpoint) {
-        throw new Error("API endpoint not found");
-    }
-
-    // 2. Validate HTTP status code
     if (
         !Number.isInteger(statusCode) ||
         statusCode < 200 ||
@@ -96,7 +84,6 @@ export const createEndpointResponse = async ({
         throw new Error("Invalid HTTP status code");
     }
 
-    // 3. Validate content type
     if (
         contentType !== undefined &&
         contentType !== "application/json"
@@ -104,7 +91,6 @@ export const createEndpointResponse = async ({
         throw new Error("Unsupported content type");
     }
 
-    // 4. No response body for 204 and 304
     if (
         [204, 304].includes(statusCode) &&
         (contentType !== undefined || modelId !== undefined)
@@ -114,7 +100,6 @@ export const createEndpointResponse = async ({
         );
     }
 
-    // 5. Model and content type must be supplied together
     if (
         (modelId !== undefined && contentType === undefined) ||
         (contentType !== undefined && modelId === undefined)
@@ -124,51 +109,75 @@ export const createEndpointResponse = async ({
         );
     }
 
-    // 6. Validate referenced API Model
-    if (modelId !== undefined) {
-        if (!mongoose.Types.ObjectId.isValid(modelId)) {
-            throw new Error("Invalid model ID");
-        }
-
-        // Your existing APIModel uses versionId.
-        const model = await APIModel.findOne({
-            _id: modelId,
-            apiId,
-            versionId: apiVersionId,
-            projectId,
-            organizationId
-        });
-
-        if (!model) {
-            throw new Error("API model not found");
-        }
+    if (
+        modelId !== undefined &&
+        !mongoose.Types.ObjectId.isValid(modelId)
+    ) {
+        throw new Error("Invalid model ID");
     }
 
-    // 7. Prevent duplicate status codes
-    const existing = await APIEndpointResponse.findOne({
-        endpointId,
-        statusCode
-    });
+    return withDraftVersionTransaction(
+        { organizationId, projectId, apiId, apiVersionId },
+        async (session) => {
+            const endpoint = await APIEndpoint.findOne({
+                _id: endpointId,
+                apiId,
+                apiVersionId,
+                projectId,
+                organizationId,
+                status: { $ne: "archived" },
+            }).session(session);
 
-    if (existing) {
-        throw new Error(
-            `Response configuration for status ${statusCode} already exists`
-        );
-    }
+            if (!endpoint) {
+                throw new Error("API endpoint not found");
+            }
 
-    // 8. Create response configuration
-    return APIEndpointResponse.create({
-        endpointId,
-        apiId,
-        apiVersionId,
-        projectId,
-        organizationId,
-        statusCode,
-        description: description?.trim(),
-        contentType,
-        modelId,
-        createdBy: userId
-    });
+            if (modelId !== undefined) {
+                const model = await APIModel.findOne({
+                    _id: modelId,
+                    apiId,
+                    versionId: apiVersionId,
+                    projectId,
+                    organizationId,
+                }).session(session);
+
+                if (!model) {
+                    throw new Error("API model not found");
+                }
+            }
+
+            const existing = await APIEndpointResponse.findOne({
+                endpointId,
+                statusCode,
+            }).session(session);
+
+            if (existing) {
+                throw new Error(
+                    `Response configuration for status ${statusCode} already exists`
+                );
+            }
+
+            const [response] = await APIEndpointResponse.create(
+                [
+                    {
+                        endpointId,
+                        apiId,
+                        apiVersionId,
+                        projectId,
+                        organizationId,
+                        statusCode,
+                        description: description?.trim(),
+                        contentType,
+                        modelId,
+                        createdBy: userId,
+                    },
+                ],
+                { session }
+            );
+
+            return response;
+        }
+    );
 };
 
 export const getEndpointResponses = async ({
@@ -253,150 +262,142 @@ export const updateEndpointResponse = async ({
     statusCode,
     description,
     contentType,
-    modelId
+    modelId,
 }: UpdateEndpointResponseInput) => {
-    // 1. Verify endpoint and ownership
-    const endpoint = await APIEndpoint.findOne({
-        _id: endpointId,
-        apiId,
-        apiVersionId,
-        projectId,
-        organizationId,
-        status: { $ne: "archived" }
-    });
+    return withDraftVersionTransaction(
+        { organizationId, projectId, apiId, apiVersionId },
+        async (session) => {
+            const endpoint = await APIEndpoint.findOne({
+                _id: endpointId,
+                apiId,
+                apiVersionId,
+                projectId,
+                organizationId,
+                status: { $ne: "archived" },
+            }).session(session);
 
-    if (!endpoint) {
-        throw new Error("API endpoint not found");
-    }
+            if (!endpoint) {
+                throw new Error("API endpoint not found");
+            }
 
-    // 2. Find response configuration
-    const response = await APIEndpointResponse.findOne({
-        _id: responseId,
-        endpointId,
-        apiId,
-        apiVersionId,
-        projectId,
-        organizationId
-    });
+            const response = await APIEndpointResponse.findOne({
+                _id: responseId,
+                endpointId,
+                apiId,
+                apiVersionId,
+                projectId,
+                organizationId,
+            }).session(session);
 
-    if (!response) {
-        throw new Error("Endpoint response not found");
-    }
+            if (!response) {
+                throw new Error("Endpoint response not found");
+            }
 
-    // 3. Calculate final values before saving
-    const finalStatusCode = statusCode ?? response.statusCode;
+            const finalStatusCode = statusCode ?? response.statusCode;
 
-    const finalContentType =
-        contentType === undefined
-            ? response.contentType
-            : contentType;
+            const finalContentType =
+                contentType === undefined
+                    ? response.contentType
+                    : contentType;
 
-    const finalModelId =
-        modelId === undefined
-            ? response.modelId?.toString()
-            : modelId;
+            const finalModelId =
+                modelId === undefined
+                    ? response.modelId?.toString()
+                    : modelId;
 
-    // 4. Validate HTTP status code
-    if (
-        !Number.isInteger(finalStatusCode) ||
-        finalStatusCode < 200 ||
-        finalStatusCode > 599
-    ) {
-        throw new Error("Invalid HTTP status code");
-    }
+            if (
+                !Number.isInteger(finalStatusCode) ||
+                finalStatusCode < 200 ||
+                finalStatusCode > 599
+            ) {
+                throw new Error("Invalid HTTP status code");
+            }
 
-    // 5. Validate content type
-    if (
-        finalContentType !== undefined &&
-        finalContentType !== null &&
-        finalContentType !== "application/json"
-    ) {
-        throw new Error("Unsupported content type");
-    }
+            if (
+                finalContentType !== undefined &&
+                finalContentType !== null &&
+                finalContentType !== "application/json"
+            ) {
+                throw new Error("Unsupported content type");
+            }
 
-    // 6. Model and content type must be provided together
-    const hasModel =
-        finalModelId !== undefined && finalModelId !== null;
+            const hasModel =
+                finalModelId !== undefined && finalModelId !== null;
 
-    const hasContentType =
-        finalContentType !== undefined && finalContentType !== null;
+            const hasContentType =
+                finalContentType !== undefined &&
+                finalContentType !== null;
 
-    if (hasModel !== hasContentType) {
-        throw new Error(
-            "modelId and contentType must be provided together"
-        );
-    }
+            if (hasModel !== hasContentType) {
+                throw new Error(
+                    "modelId and contentType must be provided together"
+                );
+            }
 
-    // 7. Status codes 204 and 304 cannot have response bodies
-    if (
-        [204, 304].includes(finalStatusCode) &&
-        (hasModel || hasContentType)
-    ) {
-        throw new Error(
-            "This HTTP status code cannot have a response body"
-        );
-    }
+            if (
+                [204, 304].includes(finalStatusCode) &&
+                (hasModel || hasContentType)
+            ) {
+                throw new Error(
+                    "This HTTP status code cannot have a response body"
+                );
+            }
 
-    // 8. Verify referenced model belongs to same API version
-    if (hasModel && finalModelId) {
-        if (!mongoose.Types.ObjectId.isValid(finalModelId)) {
-            throw new Error("Invalid model ID");
+            if (hasModel && finalModelId) {
+                if (!mongoose.Types.ObjectId.isValid(finalModelId)) {
+                    throw new Error("Invalid model ID");
+                }
+
+                const model = await APIModel.findOne({
+                    _id: finalModelId,
+                    apiId,
+                    versionId: apiVersionId,
+                    projectId,
+                    organizationId,
+                }).session(session);
+
+                if (!model) {
+                    throw new Error("API model not found");
+                }
+            }
+
+            if (finalStatusCode !== response.statusCode) {
+                const existing = await APIEndpointResponse.findOne({
+                    _id: { $ne: responseId },
+                    endpointId,
+                    statusCode: finalStatusCode,
+                }).session(session);
+
+                if (existing) {
+                    throw new Error(
+                        `Response configuration for status ${finalStatusCode} already exists`
+                    );
+                }
+            }
+
+            response.statusCode = finalStatusCode;
+
+            if (description !== undefined) {
+                response.description = description.trim();
+            }
+
+            if (contentType !== undefined) {
+                response.contentType =
+                    contentType === null ? undefined : contentType;
+            }
+
+            if (modelId !== undefined) {
+                response.modelId =
+                    modelId === null
+                        ? undefined
+                        : new mongoose.Types.ObjectId(modelId);
+            }
+
+            await response.save({ session });
+
+            return response;
         }
-
-        const model = await APIModel.findOne({
-            _id: finalModelId,
-            apiId,
-            versionId: apiVersionId,
-            projectId,
-            organizationId
-        });
-
-        if (!model) {
-            throw new Error("API model not found");
-        }
-    }
-
-    // 9. Prevent duplicate status codes
-    if (finalStatusCode !== response.statusCode) {
-        const existing = await APIEndpointResponse.findOne({
-            _id: { $ne: responseId },
-            endpointId,
-            statusCode: finalStatusCode
-        });
-
-        if (existing) {
-            throw new Error(
-                `Response configuration for status ${finalStatusCode} already exists`
-            );
-        }
-    }
-
-    // 10. Apply updates
-    response.statusCode = finalStatusCode;
-
-    if (description !== undefined) {
-        response.description = description.trim();
-    }
-
-    if (contentType !== undefined) {
-        if (contentType === null) {
-            response.contentType = undefined;
-        } else {
-            response.contentType = contentType;
-        }
-    }
-
-    if (modelId !== undefined) {
-        if (modelId === null) {
-            response.modelId = undefined;
-        } else {
-            response.modelId = new mongoose.Types.ObjectId(modelId);
-        }
-    }
-
-    await response.save();
-
-    return response;
+    );
 };
 
 export const deleteEndpointResponse = async ({
@@ -405,37 +406,42 @@ export const deleteEndpointResponse = async ({
     apiId,
     apiVersionId,
     projectId,
-    organizationId
+    organizationId,
 }: DeleteEndpointResponseInput) => {
-    // Verify endpoint belongs to the correct hierarchy
-    const endpoint = await APIEndpoint.findOne({
-        _id: endpointId,
-        apiId,
-        apiVersionId,
-        projectId,
-        organizationId,
-        status: { $ne: "archived" }
-    });
+    return withDraftVersionTransaction(
+        { organizationId, projectId, apiId, apiVersionId },
+        async (session) => {
+            const endpoint = await APIEndpoint.findOne({
+                _id: endpointId,
+                apiId,
+                apiVersionId,
+                projectId,
+                organizationId,
+                status: { $ne: "archived" },
+            }).session(session);
 
-    if (!endpoint) {
-        throw new Error("API endpoint not found");
-    }
+            if (!endpoint) {
+                throw new Error("API endpoint not found");
+            }
 
-    // Delete only the response configuration belonging
-    // to the requested endpoint and hierarchy
-    const deletedResponse =
-        await APIEndpointResponse.findOneAndDelete({
-            _id: responseId,
-            endpointId,
-            apiId,
-            apiVersionId,
-            projectId,
-            organizationId
-        });
+            const deletedResponse =
+                await APIEndpointResponse.findOneAndDelete(
+                    {
+                        _id: responseId,
+                        endpointId,
+                        apiId,
+                        apiVersionId,
+                        projectId,
+                        organizationId,
+                    },
+                    { session }
+                );
 
-    if (!deletedResponse) {
-        throw new Error("Endpoint response not found");
-    }
+            if (!deletedResponse) {
+                throw new Error("Endpoint response not found");
+            }
 
-    return deletedResponse;
+            return deletedResponse;
+        }
+    );
 };

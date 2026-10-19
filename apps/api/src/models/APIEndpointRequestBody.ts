@@ -21,8 +21,8 @@ const requestBodySchema = new Schema<IAPIEndpointRequestBody>(
       type: Schema.Types.ObjectId,
       ref: "APIEndpoint",
       required: true,
-      index: true
     },
+    
     apiId: {
       type: Schema.Types.ObjectId,
       ref: "API",

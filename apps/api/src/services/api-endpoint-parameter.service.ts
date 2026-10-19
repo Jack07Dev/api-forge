@@ -5,6 +5,11 @@ import APIEndpointParameter, {
     EndpointParameterLocation
 } from "../models/APIEndpointParameter.js";
 
+import {
+    assertDraftAPIVersion,
+    withDraftVersionTransaction
+} from "./api-version-guard.service.js";
+
 interface CreateEndpointParameterInput {
     endpointId: string;
 
@@ -68,125 +73,102 @@ export const createEndpointParameter = async ({
     required,
     description,
     defaultValue,
-    userId
+    userId,
 }: CreateEndpointParameterInput) => {
     const trimmedName = name.trim();
 
     if (!trimmedName) {
-        throw new Error(
-            "Parameter name is required"
-        );
+        throw new Error("Parameter name is required");
     }
 
     if (trimmedName.length > 100) {
-        throw new Error(
-            "Parameter name cannot exceed 100 characters"
-        );
+        throw new Error("Parameter name cannot exceed 100 characters");
     }
 
     if (!allowedLocations.includes(location)) {
-        throw new Error(
-            "Invalid parameter location"
-        );
+        throw new Error("Invalid parameter location");
     }
 
     if (!allowedDataTypes.includes(dataType)) {
-        throw new Error(
-            "Invalid parameter data type"
-        );
+        throw new Error("Invalid parameter data type");
     }
 
-    const endpoint =
-        await APIEndpoint.findOne({
-            _id: endpointId,
+    return withDraftVersionTransaction(
+        {
+            organizationId,
+            projectId,
             apiId,
             apiVersionId,
-            projectId,
-            organizationId,
-            status: {
-                $ne: "archived"
+        },
+        async (session) => {
+            const endpoint = await APIEndpoint.findOne({
+                _id: endpointId,
+                apiId,
+                apiVersionId,
+                projectId,
+                organizationId,
+                status: { $ne: "archived" },
+            }).session(session);
+
+            if (!endpoint) {
+                throw new Error("API endpoint not found");
             }
-        });
 
-    if (!endpoint) {
-        throw new Error(
-            "API endpoint not found"
-        );
-    }
+            if (location === "path") {
+                const pathParameter = `{${trimmedName}}`;
 
-    // Path parameters must exist in the
-    // endpoint path.
-    //
-    // Example:
-    // /customers/{customerId}
+                if (!endpoint.path.includes(pathParameter)) {
+                    throw new Error(
+                        `Path parameter ${pathParameter} does not exist in endpoint path`
+                    );
+                }
+            }
 
-    if (location === "path") {
-        const pathParameter =
-            `{${trimmedName}}`;
+            const finalRequired =
+                location === "path" ? true : required ?? false;
 
-        if (
-            !endpoint.path.includes(
-                pathParameter
-            )
-        ) {
-            throw new Error(
-                `Path parameter ${pathParameter} does not exist in endpoint path`
+            if (finalRequired && defaultValue !== undefined) {
+                throw new Error(
+                    "Required parameters cannot have a default value"
+                );
+            }
+
+            const existingParameter =
+                await APIEndpointParameter.findOne({
+                    endpointId,
+                    location,
+                    name: trimmedName,
+                }).session(session);
+
+            if (existingParameter) {
+                throw new Error(
+                    `Parameter ${trimmedName} already exists in ${location}`
+                );
+            }
+
+            const [parameter] = await APIEndpointParameter.create(
+                [
+                    {
+                        endpointId,
+                        apiId,
+                        apiVersionId,
+                        projectId,
+                        organizationId,
+                        name: trimmedName,
+                        location,
+                        dataType,
+                        required: finalRequired,
+                        description: description?.trim(),
+                        defaultValue,
+                        createdBy: userId,
+                    },
+                ],
+                { session }
             );
+
+            return parameter;
         }
-    }
-
-    // Path parameters are always required.
-
-    const finalRequired =
-        location === "path"
-            ? true
-            : required ?? false;
-
-    // Required parameters should not have
-    // a default value.
-
-    if (
-        finalRequired &&
-        defaultValue !== undefined
-    ) {
-        throw new Error(
-            "Required parameters cannot have a default value"
-        );
-    }
-
-    const existingParameter =
-        await APIEndpointParameter.findOne({
-            endpointId,
-            location,
-            name: trimmedName
-        });
-
-    if (existingParameter) {
-        throw new Error(
-            `Parameter ${trimmedName} already exists in ${location}`
-        );
-    }
-
-    return APIEndpointParameter.create({
-        endpointId,
-        apiId,
-        apiVersionId,
-        projectId,
-        organizationId,
-
-        name: trimmedName,
-        location,
-        dataType,
-
-        required: finalRequired,
-
-        description:
-            description?.trim(),
-
-        defaultValue,
-
-        createdBy: userId
-    });
+    );
 };
 
 export const getEndpointParameters = async ({
@@ -290,123 +272,132 @@ export const updateEndpointParameter = async ({
     dataType,
     required,
     description,
-    defaultValue
+    defaultValue,
 }: UpdateEndpointParameterInput) => {
-    const endpoint = await APIEndpoint.findOne({
-        _id: endpointId,
-        apiId,
-        apiVersionId,
-        projectId,
-        organizationId,
-        status: { $ne: "archived" }
-    });
+    return withDraftVersionTransaction(
+        {
+            organizationId,
+            projectId,
+            apiId,
+            apiVersionId,
+        },
+        async (session) => {
+            const endpoint = await APIEndpoint.findOne({
+                _id: endpointId,
+                apiId,
+                apiVersionId,
+                projectId,
+                organizationId,
+                status: { $ne: "archived" },
+            }).session(session);
 
-    if (!endpoint) {
-        throw new Error("API endpoint not found");
-    }
+            if (!endpoint) {
+                throw new Error("API endpoint not found");
+            }
 
-    const parameter = await APIEndpointParameter.findOne({
-        _id: parameterId,
-        endpointId,
-        apiId,
-        apiVersionId,
-        projectId,
-        organizationId
-    });
+            const parameter = await APIEndpointParameter.findOne({
+                _id: parameterId,
+                endpointId,
+                apiId,
+                apiVersionId,
+                projectId,
+                organizationId,
+            }).session(session);
 
-    if (!parameter) {
-        throw new Error("Endpoint parameter not found");
-    }
+            if (!parameter) {
+                throw new Error("Endpoint parameter not found");
+            }
 
-    const finalName =
-        name !== undefined ? name.trim() : parameter.name;
+            const finalName =
+                name !== undefined ? name.trim() : parameter.name;
 
-    const finalLocation =
-        location !== undefined ? location : parameter.location;
+            const finalLocation =
+                location !== undefined ? location : parameter.location;
 
-    const finalDataType =
-        dataType !== undefined ? dataType : parameter.dataType;
+            const finalDataType =
+                dataType !== undefined ? dataType : parameter.dataType;
 
-    let finalRequired =
-        required !== undefined ? required : parameter.required;
+            let finalRequired =
+                required !== undefined ? required : parameter.required;
 
-    const finalDescription =
-        description !== undefined
-            ? description.trim()
-            : parameter.description;
+            const finalDescription =
+                description !== undefined
+                    ? description.trim()
+                    : parameter.description;
 
-    const finalDefaultValue =
-        defaultValue !== undefined
-            ? defaultValue
-            : parameter.defaultValue;
+            const finalDefaultValue =
+                defaultValue !== undefined
+                    ? defaultValue
+                    : parameter.defaultValue;
 
-    if (!finalName) {
-        throw new Error("Parameter name is required");
-    }
+            if (!finalName) {
+                throw new Error("Parameter name is required");
+            }
 
-    if (finalName.length > 100) {
-        throw new Error(
-            "Parameter name cannot exceed 100 characters"
-        );
-    }
+            if (finalName.length > 100) {
+                throw new Error(
+                    "Parameter name cannot exceed 100 characters"
+                );
+            }
 
-    if (!allowedLocations.includes(finalLocation)) {
-        throw new Error("Invalid parameter location");
-    }
+            if (!allowedLocations.includes(finalLocation)) {
+                throw new Error("Invalid parameter location");
+            }
 
-    if (!allowedDataTypes.includes(finalDataType)) {
-        throw new Error("Invalid parameter data type");
-    }
+            if (!allowedDataTypes.includes(finalDataType)) {
+                throw new Error("Invalid parameter data type");
+            }
 
-    // Every path parameter must correspond to the endpoint path.
-    if (finalLocation === "path") {
-        const placeholder = `{${finalName}}`;
+            // Path parameters must exist in the endpoint path.
+            if (finalLocation === "path") {
+                const placeholder = `{${finalName}}`;
 
-        if (!endpoint.path.includes(placeholder)) {
-            throw new Error(
-                `Path parameter ${placeholder} does not exist in endpoint path`
-            );
+                if (!endpoint.path.includes(placeholder)) {
+                    throw new Error(
+                        `Path parameter ${placeholder} does not exist in endpoint path`
+                    );
+                }
+
+                finalRequired = true;
+            }
+
+            if (
+                finalRequired &&
+                finalDefaultValue !== undefined
+            ) {
+                throw new Error(
+                    "Required parameters cannot have a default value"
+                );
+            }
+
+            const duplicate = await APIEndpointParameter.findOne({
+                _id: { $ne: parameterId },
+                endpointId,
+                location: finalLocation,
+                name: finalName,
+            }).session(session);
+
+            if (duplicate) {
+                throw new Error(
+                    `Parameter ${finalName} already exists in ${finalLocation}`
+                );
+            }
+
+            parameter.name = finalName;
+            parameter.location = finalLocation;
+            parameter.dataType = finalDataType;
+            parameter.required = finalRequired;
+            parameter.description = finalDescription;
+
+            if (finalDefaultValue !== undefined) {
+                parameter.defaultValue = finalDefaultValue;
+            }
+
+            await parameter.save({ session });
+
+            return parameter;
         }
-
-        finalRequired = true;
-    }
-
-    if (
-        finalRequired &&
-        finalDefaultValue !== undefined
-    ) {
-        throw new Error(
-            "Required parameters cannot have a default value"
-        );
-    }
-
-    const duplicate =
-        await APIEndpointParameter.findOne({
-            _id: { $ne: parameterId },
-            endpointId,
-            location: finalLocation,
-            name: finalName
-        });
-
-    if (duplicate) {
-        throw new Error(
-            `Parameter ${finalName} already exists in ${finalLocation}`
-        );
-    }
-
-    parameter.name = finalName;
-    parameter.location = finalLocation;
-    parameter.dataType = finalDataType;
-    parameter.required = finalRequired;
-    parameter.description = finalDescription;
-
-    if (finalDefaultValue !== undefined) {
-        parameter.defaultValue = finalDefaultValue;
-    }
-
-    await parameter.save();
-
-    return parameter;
+    );
 };
 
 export const deleteEndpointParameter = async ({
@@ -415,7 +406,7 @@ export const deleteEndpointParameter = async ({
     apiId,
     apiVersionId,
     projectId,
-    organizationId
+    organizationId,
 }: {
     parameterId: string;
     endpointId: string;
@@ -424,33 +415,46 @@ export const deleteEndpointParameter = async ({
     projectId: string;
     organizationId: string;
 }) => {
-    const endpoint = await APIEndpoint.findOne({
-        _id: endpointId,
-        apiId,
-        apiVersionId,
-        projectId,
-        organizationId,
-        status: { $ne: "archived" }
-    });
+    return withDraftVersionTransaction(
+        {
+            organizationId,
+            projectId,
+            apiId,
+            apiVersionId,
+        },
+        async (session) => {
+            // 1. Verify the endpoint exists and is not archived.
+            const endpoint = await APIEndpoint.findOne({
+                _id: endpointId,
+                apiId,
+                apiVersionId,
+                projectId,
+                organizationId,
+                status: { $ne: "archived" },
+            }).session(session);
 
-    if (!endpoint) {
-        throw new Error("API endpoint not found");
-    }
+            if (!endpoint) {
+                throw new Error("API endpoint not found");
+            }
 
-    const parameter = await APIEndpointParameter.findOne({
-        _id: parameterId,
-        endpointId,
-        apiId,
-        apiVersionId,
-        projectId,
-        organizationId
-    });
+            // 2. Find the parameter within the correct hierarchy.
+            const parameter = await APIEndpointParameter.findOne({
+                _id: parameterId,
+                endpointId,
+                apiId,
+                apiVersionId,
+                projectId,
+                organizationId,
+            }).session(session);
 
-    if (!parameter) {
-        throw new Error("Endpoint parameter not found");
-    }
+            if (!parameter) {
+                throw new Error("Endpoint parameter not found");
+            }
 
-    await parameter.deleteOne();
+            // 3. Delete the parameter using the same transaction.
+            await parameter.deleteOne({ session });
 
-    return parameter;
+            return parameter;
+        }
+    );
 };
